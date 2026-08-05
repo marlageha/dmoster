@@ -10,15 +10,16 @@ from astropy.table import Table
 from astropy import units as u
 from astropy.io import ascii,fits
 
-import sfdmap
+from sfdmap2 import sfdmap
 from scipy.stats import truncnorm
 
 
 ###########################################
-def get_ebv(allspec):
+def get_ebv(allspec,pandas = 0):
 
     DEIMOS_RAW  = os.getenv('DEIMOS_RAW')
-
+    print(DEIMOS_RAW)
+    
     sdf_ext = sfdmap.SFDMap(DEIMOS_RAW+'SFDmaps/')
     EBV     = sdf_ext.ebv(allspec['RA'],allspec['DEC'])
 
@@ -36,13 +37,17 @@ def get_ebv(allspec):
     #Ag = 3.793 * allspec['EBV']
 
     # THESE ARE USED in ls_dr10 and decaps, but its already baked in
+    Ai = 1.58  * allspec['EBV']
     Ar = 2.165 * allspec['EBV']
     Ag = 3.214 * allspec['EBV']
 
+    # From Ibata+ 2014
+    if (pandas == 1):
+        Ai = 2.080 * allspec['EBV']
+        Ag = 3.793 * allspec['EBV']
 
 
-
-    return allspec, Ar, Ag
+    return allspec, Ar, Ag, Ai
     
 
 ###########################################
@@ -74,6 +79,19 @@ def calc_MV_star(allspec,obj):
     # Only update stars with matched photometry
     m = allspec['rmag_o'] > 0
     allspec['MV_o'][m] = V[m] - dmod
+
+
+    # DETERMINE V-BAND FROM HUXOR+08 for PANDAS photometry
+    # CONVERT TO OLD MEGACAM AND THEN TO V-BAND
+    if obj['Phot'] == 'pandas':
+        g1 = allspec['gmag_o'] + 0.092
+        i1 = allspec['imag_o'] - 0.401
+        gi = g1-i1
+        V  = g1 - (0.42*gi) + (0.04*gi**2) + 0.1
+        
+        # Only update stars with matched photometry
+        m = allspec['gmag_o'] > 0
+        allspec['MV_o'][m] = V[m] - dmod
 
 
     
@@ -196,7 +214,8 @@ def CaT_to_FeH(alldata):
             # EW ERRORS    
             CaT     = slt['ew_cat']
             CaTerr  = slt['ew_cat_err']
-
+            
+            
             FeH, FeH_err, ferru,ferrl = calculate_FeH(mag, magerr, CaT, CaTerr)
 
             alldata['ew_feh'][ii]      = FeH
@@ -326,7 +345,7 @@ def match_photometry(obj,allspec):
     # DEFINE MATCHING LENGTH
     dm = 1.25
     dm_serendip = 2.
-
+ 
   #####################
     ### PRIMARY SOURCE:   LEGACY DR10
     #   Using dereddened AB magnitudes in DECAM system
@@ -336,24 +355,20 @@ def match_photometry(obj,allspec):
         
         ls_dr10.rename_column('dered_mag_g', 'gmag')
         ls_dr10.rename_column('dered_mag_r', 'rmag')
+        ls_dr10.rename_column('dered_mag_i', 'imag')
 
         # REPLACE INF VALUES
         m = np.isfinite(ls_dr10['gmag'])
         ls_dr10['gmag'][~m] = -999.0
         m = np.isfinite(ls_dr10['rmag'])
         ls_dr10['rmag'][~m] = -999.0
-
+        m = np.isfinite(ls_dr10['imag'])
+        ls_dr10['imag'][~m] = -999.0    
      
-
-        # Hack, update
-        if (obj['Name2'] == 'Eri4') | (obj['Name2'] == 'N6254'):
-            ls_dr10['rmag'] = ls_dr10['dered_mag_i']+0.1 
-            ls_dr10['flux_r'] = ls_dr10['flux_i'] 
-            ls_dr10['flux_ivar_r'] = ls_dr10['flux_ivar_i'] 
-
 
         # NO DEIMOS SOURCES THIS FAINT, CUT TO REDUCE MIS-MATCHING
         ls_dr10 = ls_dr10[ls_dr10['rmag'] < 25]
+        ls_dr10 = ls_dr10[ls_dr10['imag'] < 25]
 
 
         # CORRECT BASS MAGNITUDES NORTHERN MAGNITUDES
@@ -371,11 +386,13 @@ def match_photometry(obj,allspec):
         mt = foo[d2d < dm*u.arcsec]
         print(np.size(mt))
 
-        allspec['rmag_o'][mt] = ls_dr10['rmag'][idx[d2d < dm*u.arcsec]] 
         allspec['gmag_o'][mt] = ls_dr10['gmag'][idx[d2d < dm*u.arcsec]] 
+        allspec['rmag_o'][mt] = ls_dr10['rmag'][idx[d2d < dm*u.arcsec]] 
+        allspec['imag_o'][mt] = ls_dr10['imag'][idx[d2d < dm*u.arcsec]] 
 
-        allspec['rmag_err'][mt] = legacy_mag_err(ls_dr10['flux_r'][idx[d2d < dm*u.arcsec]] , ls_dr10['flux_ivar_r'][idx[d2d < dm*u.arcsec]] )
         allspec['gmag_err'][mt] = legacy_mag_err(ls_dr10['flux_g'][idx[d2d < dm*u.arcsec]] , ls_dr10['flux_ivar_g'][idx[d2d < dm*u.arcsec]] )
+        allspec['rmag_err'][mt] = legacy_mag_err(ls_dr10['flux_r'][idx[d2d < dm*u.arcsec]] , ls_dr10['flux_ivar_r'][idx[d2d < dm*u.arcsec]] )
+        allspec['imag_err'][mt] = legacy_mag_err(ls_dr10['flux_i'][idx[d2d < dm*u.arcsec]] , ls_dr10['flux_ivar_i'][idx[d2d < dm*u.arcsec]] )
 
         allspec['phot_source'][mt] = 'ls_dr10'
         allspec['phot_type'][mt] = ls_dr10['type'][idx[d2d < dm*u.arcsec]] 
@@ -390,11 +407,13 @@ def match_photometry(obj,allspec):
             mts = foo[sm]
             #print(allspec['rmag_o'][mts])
 
-            allspec['rmag_o'][mts] = ls_dr10['rmag'][idx[sm]] 
             allspec['gmag_o'][mts] = ls_dr10['gmag'][idx[sm]] 
+            allspec['rmag_o'][mts] = ls_dr10['rmag'][idx[sm]] 
+            allspec['imag_o'][mts] = ls_dr10['imag'][idx[sm]] 
 
-            allspec['rmag_err'][mts] = legacy_mag_err(ls_dr10['flux_r'][idx[sm]] , ls_dr10['flux_ivar_r'][idx[sm]] )
             allspec['gmag_err'][mts] = legacy_mag_err(ls_dr10['flux_g'][idx[sm]] , ls_dr10['flux_ivar_g'][idx[sm]] )
+            allspec['rmag_err'][mts] = legacy_mag_err(ls_dr10['flux_r'][idx[sm]] , ls_dr10['flux_ivar_r'][idx[sm]] )
+            allspec['imag_err'][mts] = legacy_mag_err(ls_dr10['flux_i'][idx[sm]] , ls_dr10['flux_ivar_i'][idx[sm]] )
 
             allspec['phot_source'][mts] = 'ls_dr10'
             allspec['phot_type'][mts] = ls_dr10['type'][idx[sm]] 
@@ -440,7 +459,7 @@ def match_photometry(obj,allspec):
         g_decals,r_decals = transform_sdss2decals(g_sdss,r_sdss)
 
         # Get Ar/Ag
-        allspec, Ar, Ag = get_ebv(allspec)
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
         mt = foo[d2d < dm*u.arcsec]
 
         allspec['rmag_o'][mt]   = r_decals[idx[d2d < dm*u.arcsec]]  - Ar[mt]
@@ -469,7 +488,7 @@ def match_photometry(obj,allspec):
         
         file = DEIMOS_RAW + '/Photometry/munoz18/munoz18_secondary.txt'
         # Get Ar/Ag
-        allspec, Ar, Ag = get_ebv(allspec)
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
 
         munozf = ascii.read(file)
 
@@ -524,7 +543,7 @@ def match_photometry(obj,allspec):
         g_sdss = sdss['gmag'][idx[d2d < dm*u.arcsec]]
 
         # Get Ar/Ag
-        allspec, Ar, Ag = get_ebv(allspec)
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
 
         g_decals,r_decals = transform_sdss2decals(g_sdss,r_sdss)
         allspec['rmag_o'][mt] =  r_decals - Ar[mt]
@@ -560,7 +579,7 @@ def match_photometry(obj,allspec):
         idx, d2d, d3d = cdeimos.match_to_catalog_sky(cls_dr10)  
         foo = np.arange(0,np.size(idx),1)
 
-        allspec, Ar, Ag = get_ebv(allspec)
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
 
         mt = foo[d2d < dm*u.arcsec]
         allspec['rmag_o'][mt] = decaps['mean_mag_r'][idx[d2d < dm*u.arcsec]] - Ar[mt]
@@ -590,7 +609,7 @@ def match_photometry(obj,allspec):
         foo = np.arange(0,np.size(idx),1)
 
         # GET reddening 
-        allspec, Ar, Ag = get_ebv(allspec)
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
 
 
         # INCREASED TO 2" TO GET CENTRAL GLOBULAR CLUSTER MEMBERS
@@ -624,7 +643,7 @@ def match_photometry(obj,allspec):
         foo = np.arange(0,np.size(idx),1)
 
         # GET reddening 
-        allspec, Ar, Ag = get_ebv(allspec)
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
 
         # INCREASED TO 2" TO GET CENTRAL GLOBULAR CLUSTER MEMBERS
         ds = 2.25
@@ -668,7 +687,7 @@ def match_photometry(obj,allspec):
         idx, d2d, d3d = cdeimos.match_to_catalog_sky(cgaia)  
         foo = np.arange(0,np.size(idx),1)
 
-        allspec, Ar, Ag = get_ebv(allspec)
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
 
         mt = foo[d2d < dm*u.arcsec]
         allspec['rmag_o'][mt]   = rmag[idx[d2d < dm*u.arcsec]] - Ar[mt]
@@ -680,14 +699,90 @@ def match_photometry(obj,allspec):
 
         
 
+    if obj['Phot'] == 'sdss_dr14':
+        
+            file  =  DEIMOS_RAW + '/Photometry/sdss_dr14/sdss_dr14_'+obj['Name2']+'.fits'
+            sdss  = Table.read(file)
+            m=(sdss['err_g'] < 0.4) & (sdss['err_r'] < 0.4)
+            sdss=sdss[m]
+            allspec, Ar, Ag, Ai = get_ebv(allspec)
+
+
+            cdeimos = SkyCoord(ra=allspec['RA']*u.degree, dec=allspec['DEC']*u.degree) 
+            csdss = SkyCoord(ra=sdss['ra']*u.degree, dec=sdss['dec']*u.degree) 
+            idx, d2d, d3d = cdeimos.match_to_catalog_sky(csdss)  
+            foo = np.arange(0,np.size(idx),1)
+
+        
+            mt = foo[d2d < dm*u.arcsec]
+            allspec['imag_o'][mt] = sdss['i'][idx[d2d < dm*u.arcsec]] - Ai[mt] 
+            allspec['rmag_o'][mt] = sdss['r'][idx[d2d < dm*u.arcsec]] - Ar[mt] 
+            allspec['gmag_o'][mt] = sdss['g'][idx[d2d < dm*u.arcsec]] - Ag[mt]
+            allspec['imag_err'][mt] = sdss['err_i'][idx[d2d < dm*u.arcsec]] 
+            allspec['rmag_err'][mt] = sdss['err_r'][idx[d2d < dm*u.arcsec]] 
+            allspec['gmag_err'][mt] = sdss['err_g'][idx[d2d < dm*u.arcsec]] 
+            allspec['phot_source'][mt] = 'sdss'
+    
+
     if obj['Phot'] == 'pandas':
 
+        # GET reddening 
+        allspec, Ar, Ag, Ai = get_ebv(allspec)
+
+
+        # FIRST SUPPLEMENT WITH OTHER PHOTOMETRY IF AVALABLE
+        if obj['Phot2'] == 'sdss_dr14':
+            file  =  DEIMOS_RAW + '/Photometry/sdss_dr14/sdss_dr14_'+obj['Name2']+'.fits'
+            sdss  = Table.read(file)
+            m=(sdss['err_g'] < 0.4) & (sdss['err_r'] < 0.4)
+            sdss=sdss[m]
+
+
+            cdeimos = SkyCoord(ra=allspec['RA']*u.degree, dec=allspec['DEC']*u.degree) 
+            csdss = SkyCoord(ra=sdss['ra']*u.degree, dec=sdss['dec']*u.degree) 
+            idx, d2d, d3d = cdeimos.match_to_catalog_sky(csdss)  
+            foo = np.arange(0,np.size(idx),1)
+
+            mt = foo[d2d < dm*u.arcsec]
+            allspec['imag_o'][mt] = sdss['i'][idx[d2d < dm*u.arcsec]] - Ai[mt] 
+            allspec['rmag_o'][mt] = sdss['r'][idx[d2d < dm*u.arcsec]] - Ar[mt] 
+            allspec['gmag_o'][mt] = sdss['g'][idx[d2d < dm*u.arcsec]] - Ag[mt]
+            allspec['imag_err'][mt] = sdss['err_i'][idx[d2d < dm*u.arcsec]] 
+            allspec['rmag_err'][mt] = sdss['err_r'][idx[d2d < dm*u.arcsec]] 
+            allspec['gmag_err'][mt] = sdss['err_g'][idx[d2d < dm*u.arcsec]] 
+            allspec['phot_source'][mt] = 'sdss'
+
+        if obj['Phot2'] == 'PanS':
+            file = DEIMOS_RAW + '/Photometry/PanS/PanS_'+obj['Name2']+'.csv'
+            pans = ascii.read(file)
+            m=(pans['rPSFMag'] != -999) & (pans['gPSFMag'] != -999) & (pans['rPSFMagErr'] < 0.5)& (pans['gPSFMagErr'] < 0.5)
+            pans=pans[m]
+        
+            cpans   = SkyCoord(ra=pans['raMean']*u.degree, dec=pans['decMean']*u.degree) 
+            cdeimos = SkyCoord(ra=allspec['RA']*u.degree, dec=allspec['DEC']*u.degree) 
+ 
+            idx, d2d, d3d = cdeimos.match_to_catalog_sky(cpans)  
+            foo = np.arange(0,np.size(idx),1)
+            mt = foo[d2d < dm*u.arcsec]
+            
+            allspec['imag_o'][mt] = pans['iPSFMag'][idx[d2d < dm*u.arcsec]] - Ai[mt] 
+            allspec['rmag_o'][mt] = pans['rPSFMag'][idx[d2d < dm*u.arcsec]] - Ar[mt] 
+            allspec['gmag_o'][mt] = pans['gPSFMag'][idx[d2d < dm*u.arcsec]] - Ag[mt]
+            allspec['imag_err'][mt] = pans['iPSFMagErr'][idx[d2d < dm*u.arcsec]] 
+            allspec['rmag_err'][mt] = pans['rPSFMagErr'][idx[d2d < dm*u.arcsec]] 
+            allspec['gmag_err'][mt] = pans['gPSFMagErr'][idx[d2d < dm*u.arcsec]] 
+            allspec['phot_source'][mt] = 'PanS'
+
+        allspec, Ar, Ag, Ai = get_ebv(allspec,pandas=1)
+
+
+        # OVERRIDE WITH PANDAS:   g and i-band photometry
         file = DEIMOS_RAW + '/Photometry/PANDAS/PANDAS_'+obj['Name2']+'.csv'
         pandas = ascii.read(file)
         pandas.rename_column('g', 'gmag')
-        pandas.rename_column('i', 'rmag')          # NEED TO TRANSFORM!!!
+        pandas.rename_column('i', 'imag')        
         pandas.rename_column('dg', 'gmag_err')
-        pandas.rename_column('di', 'rmag_err')
+        pandas.rename_column('di', 'imag_err')
 
 
 
@@ -696,14 +791,16 @@ def match_photometry(obj,allspec):
         idx, d2d, d3d = cdeimos.match_to_catalog_sky(cpandas)  
         foo = np.arange(0,np.size(idx),1)
 
-
-        mt = foo[d2d < 1.*u.arcsec]
-        allspec['rmag_o'][mt] = pandas['rmag'][idx[d2d < 1.*u.arcsec]] 
-        allspec['gmag_o'][mt] = pandas['gmag'][idx[d2d < 1.*u.arcsec]] 
-        allspec['rmag_err'][mt] = 0.01
-        allspec['gmag_err'][mt] = 0.01
+        mt = foo[d2d < dm*u.arcsec]
+        allspec['imag_o'][mt] = pandas['imag'][idx[d2d < dm*u.arcsec]] - Ai[mt] 
+        allspec['gmag_o'][mt] = pandas['gmag'][idx[d2d < dm*u.arcsec]] - Ag[mt]
+        allspec['imag_err'][mt] = np.sqrt(pandas['imag_err'][idx[d2d < dm*u.arcsec]]**2 + 0.05**2)
+        allspec['gmag_err'][mt] = np.sqrt(pandas['gmag_err'][idx[d2d < dm*u.arcsec]]**2 + 0.05**2)
         allspec['phot_source'][mt] = 'pandas'
 
+
+        allspec['rmag_o'][mt] = allspec['imag_o'][mt] + 0.3
+        allspec['rmag_err'][mt] = allspec['imag_err'][mt]
 
 
     # REMOVE SERENDIP STARS WITHOUT PHOTOMETRY
