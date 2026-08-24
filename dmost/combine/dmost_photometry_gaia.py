@@ -347,76 +347,86 @@ def match_photometry(obj,allspec):
     dm_serendip = 2.
  
   #####################
-    ### PRIMARY SOURCE:   LEGACY DR10
+    ### PRIMARY SOURCE:   LEGACY DR11 (replaces DR10 -- DR11 has native
+    #   griz for our targets, confirmed empirically: 5 spot-checked
+    #   objects spanning dec -23 to +67 all had >=98% finite i-band rows,
+    #   despite the Legacy Survey docs describing i-band as DECam(south)-
+    #   only in general. https://www.legacysurvey.org/decamls/)
     #   Using dereddened AB magnitudes in DECAM system
-    if obj['Phot'] == 'ls_dr10':
-        file = DEIMOS_RAW + '/Photometry/legacy_DR10/dr10_'+obj['Name2']+'.csv'
-        ls_dr10 = ascii.read(file)
-        
-        ls_dr10.rename_column('dered_mag_g', 'gmag')
-        ls_dr10.rename_column('dered_mag_r', 'rmag')
-        ls_dr10.rename_column('dered_mag_i', 'imag')
+    if obj['Phot'] == 'ls_dr11':
+        file = DEIMOS_RAW + '/Photometry/legacy_DR11/ls_dr11_'+obj['Name2']+'.csv'
+        ls_dr11 = ascii.read(file)
+
+        ls_dr11.rename_column('dered_mag_g', 'gmag')
+        ls_dr11.rename_column('dered_mag_r', 'rmag')
+        ls_dr11.rename_column('dered_mag_i', 'imag')
 
         # REPLACE INF VALUES
-        m = np.isfinite(ls_dr10['gmag'])
-        ls_dr10['gmag'][~m] = -999.0
-        m = np.isfinite(ls_dr10['rmag'])
-        ls_dr10['rmag'][~m] = -999.0
-        m = np.isfinite(ls_dr10['imag'])
-        ls_dr10['imag'][~m] = -999.0    
-     
+        m = np.isfinite(ls_dr11['gmag'])
+        ls_dr11['gmag'][~m] = -999.0
+        m = np.isfinite(ls_dr11['rmag'])
+        ls_dr11['rmag'][~m] = -999.0
+        m = np.isfinite(ls_dr11['imag'])
+        ls_dr11['imag'][~m] = -999.0
+
 
         # NO DEIMOS SOURCES THIS FAINT, CUT TO REDUCE MIS-MATCHING
-        ls_dr10 = ls_dr10[ls_dr10['rmag'] < 25]
-        ls_dr10 = ls_dr10[ls_dr10['imag'] < 25]
+        ls_dr11 = ls_dr11[ls_dr11['rmag'] < 25]
+        ls_dr11 = ls_dr11[ls_dr11['imag'] < 25]
 
 
-        # CORRECT BASS MAGNITUDES NORTHERN MAGNITUDES
-        if np.median(ls_dr10['dec'] > 34.):
-            m = (ls_dr10['gmag'] > 0) & (ls_dr10['rmag'] > 0)
-            ls_dr10['rmag'][m] =  -0.0382 * (ls_dr10['gmag'][m] - ls_dr10['rmag'][m]) + 0.0108 + ls_dr10['rmag'][m]
+        # CORRECT BASS MAGNITUDES FOR NORTHERN FIELDS -- CARRIED OVER
+        # UNCHANGED FROM THE DR10 BRANCH. LIKELY A BASS-vs-DECam r-FILTER
+        # BANDPASS/COLOR-TERM EFFECT RATHER THAN A CALIBRATION ARTIFACT
+        # (BASS DR3 IS ITSELF CALIBRATED TO PS1 TO <5 mmag, Zou et al.
+        # 2019, ApJS 245, 4 -- SO A RESIDUAL BASS/DECam MISMATCH REFLECTS
+        # THE UNDERLYING INSTRUMENTS, NOT THE PIPELINE), AND CONFIRMED
+        # (2026-08-24, M. Geha) TO BE UNCHANGED IN DR11.
+        if np.median(ls_dr11['dec'] > 34.):
+            m = (ls_dr11['gmag'] > 0) & (ls_dr11['rmag'] > 0)
+            ls_dr11['rmag'][m] =  -0.0382 * (ls_dr11['gmag'][m] - ls_dr11['rmag'][m]) + 0.0108 + ls_dr11['rmag'][m]
 
-        
-        cls_dr10 = SkyCoord(ra=ls_dr10['ra']*u.degree, dec=ls_dr10['dec']*u.degree) 
-        cdeimos  = SkyCoord(ra=allspec['RA']*u.degree, dec=allspec['DEC']*u.degree) 
 
-        idx, d2d, d3d = cdeimos.match_to_catalog_sky(cls_dr10)  
+        cls_dr11 = SkyCoord(ra=ls_dr11['ra']*u.degree, dec=ls_dr11['dec']*u.degree)
+        cdeimos  = SkyCoord(ra=allspec['RA']*u.degree, dec=allspec['DEC']*u.degree)
+
+        idx, d2d, d3d = cdeimos.match_to_catalog_sky(cls_dr11)
         foo = np.arange(0,np.size(idx),1)
 
         mt = foo[d2d < dm*u.arcsec]
         print(np.size(mt))
 
-        allspec['gmag_o'][mt] = ls_dr10['gmag'][idx[d2d < dm*u.arcsec]] 
-        allspec['rmag_o'][mt] = ls_dr10['rmag'][idx[d2d < dm*u.arcsec]] 
-        allspec['imag_o'][mt] = ls_dr10['imag'][idx[d2d < dm*u.arcsec]] 
+        allspec['gmag_o'][mt] = ls_dr11['gmag'][idx[d2d < dm*u.arcsec]]
+        allspec['rmag_o'][mt] = ls_dr11['rmag'][idx[d2d < dm*u.arcsec]]
+        allspec['imag_o'][mt] = ls_dr11['imag'][idx[d2d < dm*u.arcsec]]
 
-        allspec['gmag_err'][mt] = legacy_mag_err(ls_dr10['flux_g'][idx[d2d < dm*u.arcsec]] , ls_dr10['flux_ivar_g'][idx[d2d < dm*u.arcsec]] )
-        allspec['rmag_err'][mt] = legacy_mag_err(ls_dr10['flux_r'][idx[d2d < dm*u.arcsec]] , ls_dr10['flux_ivar_r'][idx[d2d < dm*u.arcsec]] )
-        allspec['imag_err'][mt] = legacy_mag_err(ls_dr10['flux_i'][idx[d2d < dm*u.arcsec]] , ls_dr10['flux_ivar_i'][idx[d2d < dm*u.arcsec]] )
+        allspec['gmag_err'][mt] = legacy_mag_err(ls_dr11['flux_g'][idx[d2d < dm*u.arcsec]] , ls_dr11['flux_ivar_g'][idx[d2d < dm*u.arcsec]] )
+        allspec['rmag_err'][mt] = legacy_mag_err(ls_dr11['flux_r'][idx[d2d < dm*u.arcsec]] , ls_dr11['flux_ivar_r'][idx[d2d < dm*u.arcsec]] )
+        allspec['imag_err'][mt] = legacy_mag_err(ls_dr11['flux_i'][idx[d2d < dm*u.arcsec]] , ls_dr11['flux_ivar_i'][idx[d2d < dm*u.arcsec]] )
 
-        allspec['phot_source'][mt] = 'ls_dr10'
-        allspec['phot_type'][mt] = ls_dr10['type'][idx[d2d < dm*u.arcsec]] 
+        allspec['phot_source'][mt] = 'ls_dr11'
+        allspec['phot_type'][mt] = ls_dr11['type'][idx[d2d < dm*u.arcsec]]
 
 
 
         # INCREASE FOR SERENDIPS W/O Match
         sm  = (d2d < dm_serendip*u.arcsec) & (allspec['serendip'] == 1) & (allspec['rmag_o'] < 0)
-        
+
 
         if np.sum(sm) > 0:
             mts = foo[sm]
             #print(allspec['rmag_o'][mts])
 
-            allspec['gmag_o'][mts] = ls_dr10['gmag'][idx[sm]] 
-            allspec['rmag_o'][mts] = ls_dr10['rmag'][idx[sm]] 
-            allspec['imag_o'][mts] = ls_dr10['imag'][idx[sm]] 
+            allspec['gmag_o'][mts] = ls_dr11['gmag'][idx[sm]]
+            allspec['rmag_o'][mts] = ls_dr11['rmag'][idx[sm]]
+            allspec['imag_o'][mts] = ls_dr11['imag'][idx[sm]]
 
-            allspec['gmag_err'][mts] = legacy_mag_err(ls_dr10['flux_g'][idx[sm]] , ls_dr10['flux_ivar_g'][idx[sm]] )
-            allspec['rmag_err'][mts] = legacy_mag_err(ls_dr10['flux_r'][idx[sm]] , ls_dr10['flux_ivar_r'][idx[sm]] )
-            allspec['imag_err'][mts] = legacy_mag_err(ls_dr10['flux_i'][idx[sm]] , ls_dr10['flux_ivar_i'][idx[sm]] )
+            allspec['gmag_err'][mts] = legacy_mag_err(ls_dr11['flux_g'][idx[sm]] , ls_dr11['flux_ivar_g'][idx[sm]] )
+            allspec['rmag_err'][mts] = legacy_mag_err(ls_dr11['flux_r'][idx[sm]] , ls_dr11['flux_ivar_r'][idx[sm]] )
+            allspec['imag_err'][mts] = legacy_mag_err(ls_dr11['flux_i'][idx[sm]] , ls_dr11['flux_ivar_i'][idx[sm]] )
 
-            allspec['phot_source'][mts] = 'ls_dr10'
-            allspec['phot_type'][mts] = ls_dr10['type'][idx[sm]] 
+            allspec['phot_source'][mts] = 'ls_dr11'
+            allspec['phot_type'][mts] = ls_dr11['type'][idx[sm]]
 
             #for ob in allspec[mts]:
             #    print(ob['rmag_o'],ob['RA'],ob['DEC'],ob['SN'],ob['marz_flag'])
