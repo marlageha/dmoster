@@ -253,7 +253,15 @@ def vignetting_limits(slit,nexp,wave):
 
     xpos = slit['spat_pixpos'][nexp]
     det  = slit['det'][nexp]
-    
+
+    # FITS STRING COLUMNS COME BACK AS numpy.bytes_ (E.G. b'MSC04'), WHICH
+    # IS NEVER EQUAL TO A str LITERAL IN PYTHON 3 -- DECODE SO THE
+    # DETECTOR COMPARISONS BELOW ACTUALLY MATCH. WITHOUT THIS, NEITHER
+    # CONDITION EVER FIRES AND THE VIGNETTING CORRECTION SILENTLY NEVER
+    # APPLIES.
+    if isinstance(det, bytes):
+        det = det.decode()
+
     # FOR DETECTOR 1+5, APPLY VIGNETTING FIT
     if (det == 'MSC01') & (xpos < 1350):
         p5 = [ 1.05254130e-04, -4.26541379e-01 , 4.20569201e+02] 
