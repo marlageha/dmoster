@@ -200,10 +200,87 @@ def lnprob_stageB(theta, wvl, spec, ivar, mw):
 
 
 ########################################################################
+# p0 FIXED AT 1.0 FOR STAGE B TOO -- ADOPTED 2026-08-24, SAME RATIONALE AS
+# dmost_cat_model.py's fit_decoupled_stage (see that file's comment
+# block): trust the upstream continuum normalization completely rather
+# than re-deriving a second, locally-different estimate inside the fit.
+# CaT_GL_gvary_freecenters (general 14-param evaluator, p0 free) is KEPT
+# UNCHANGED above for reconstructing/plotting stored cat_theta from any
+# run (this one or legacy). Only the fit itself drops p0 to 13 params;
+# fit_adaptive_GL_gvary below re-inserts p0=1.0 at slot 0 of the
+# returned theta so the stored layout stays 14-value-compatible.
+########################################################################
+
+def CaT_GL_gvary_freecenters_fixedp0(x, p1, p2, p3, dg1, dg3, p4, p5, p6, p7, p8, p9, d1, d3):
+    return CaT_GL_gvary_freecenters(x, 1.0, p1, p2, p3, dg1, dg3, p4, p5, p6, p7, p8, p9, d1, d3)
+
+
+def lnprior_cat_GL_gvary_stageB_fixedp0(theta):
+    p1, p2, p3, dg1, dg3, p4, p5, p6, p7, p8, p9, d1, d3 = theta
+
+    if (p1 < CENTER-CENTER_MARGIN_A) | (p1 > CENTER+CENTER_MARGIN_A):
+        return -np.inf
+    if (d1 < -D1_MARGIN_B) | (d1 > D1_MARGIN_B):
+        return -np.inf
+    if (d3 < -D3_MARGIN_B) | (d3 > D3_MARGIN_B):
+        return -np.inf
+    if (p2 < 0.4) | (p2 > 2.5):
+        return -np.inf
+    if (p3 < 0.4) | (p3 > 2.5):
+        return -np.inf
+    if (abs(dg1) > GAMMA_DEV_HARDCAP) | (abs(dg3) > GAMMA_DEV_HARDCAP):
+        return -np.inf
+
+    lnp  = dmost_EW._ln_gauss(p1, CENTER, 0.5)
+    lnp += dmost_EW._ln_gauss(d1, 0.0, 0.3)
+    lnp += dmost_EW._ln_gauss(d3, 0.0, 0.3)
+    lnp += dmost_EW._ln_lognormal(p2, 0.0, 0.5)
+    lnp += dmost_EW._ln_lognormal(p3, 0.0, 0.5)
+    lnp += dmost_EW._ln_gauss(dg1, 0.0, GAMMA_DEV_SCALE)
+    lnp += dmost_EW._ln_gauss(dg3, 0.0, GAMMA_DEV_SCALE)
+    if not np.isfinite(lnp):
+        return -np.inf
+
+    depths = np.array([p4, p5, p6, p7, p8, p9])
+    if np.any(depths < 0):
+        return -np.inf
+
+    EW1, EW2, EW3 = p4+p7, p5+p8, p6+p9
+    if (EW1 <= 0) | (EW2 <= 0) | (EW3 <= 0):
+        return -np.inf
+
+    lnp += -0.5*(EW2/3.0)**2
+    lnp += dmost_EW._ln_gauss(EW1, g.FLAT_EW1_OVER_EW2*EW2, EW1_SCATTER)
+    lnp += dmost_EW._ln_gauss(EW3, g.FLAT_EW3_OVER_EW2*EW2, EW3_SCATTER)
+    lnp += dmost_EW._ln_beta_frac(p7, EW1)
+    lnp += dmost_EW._ln_beta_frac(p8, EW2)
+    lnp += dmost_EW._ln_beta_frac(p9, EW3)
+
+    if not np.isfinite(lnp):
+        return -np.inf
+    return lnp
+
+
+def lnlike_stageB_fixedp0(theta, wvl, spec, ivar, mw):
+    model = CaT_GL_gvary_freecenters_fixedp0(wvl[mw], *theta)
+    chi2  = (spec[mw]-model)**2 * ivar[mw]
+    return -0.5*np.sum(chi2)
+
+
+def lnprob_stageB_fixedp0(theta, wvl, spec, ivar, mw):
+    lp = lnprior_cat_GL_gvary_stageB_fixedp0(theta)
+    if not np.isfinite(lp):
+        return -np.inf
+    return lp + lnlike_stageB_fixedp0(theta, wvl, spec, ivar, mw)
+
+
+########################################################################
 JITTER_12 = np.array([0.02, 0.1, 0.05, 0.05, 0.05, 0.05, 0.03,0.03,0.03, 0.03,0.03,0.03])
 JITTER_14 = np.concatenate([JITTER_12, [0.15, 0.15]])
+JITTER_13 = JITTER_14[1:]                  # p0's jitter entry dropped
 POS_IDX_12 = [2, 3, 6, 7, 8, 9, 10, 11]   # WIDTHS + DEPTHS -- dg1/dg3 (4,5) STAY FREE-SIGNED
 POS_IDX_14 = POS_IDX_12                    # d1/d3 (12,13) ALSO STAY FREE-SIGNED
+POS_IDX_13 = [i-1 for i in POS_IDX_14]     # SAME, SHIFTED DOWN ONE FOR THE p0-DROPPED VECTOR
 
 
 def run_fit(lnprob_fn, ndim, seed, wvl, spec, ivar, mw, jitter, pos_idx, nwalkers=32):
@@ -300,23 +377,26 @@ def fit_adaptive_GL_gvary(nwave, nspec, nivar, mw):
             return result
         theta_for_seedB = thetaA
 
-    # ---- STAGE B (shared-width model, free centers) ----
-    # theta_for_seedB's p2/p3 (positions 2,3) can be up to g.ANCHOR_MAX (4.0,
-    # the decoupled fit's bound), but Stage B's own prior still caps p2/p3
-    # at 2.5 -- clip the seed so it starts inside Stage B's own valid
-    # range, or its walkers start invalid and never recover (facc=0.0).
-    seedB = np.concatenate([theta_for_seedB[:12], [0.0, 0.0]])
+    # ---- STAGE B (shared-width model, free centers, p0 fixed at 1.0) ----
+    # theta_for_seedB's p2/p3 (positions 2,3 of the 13-value theta) can be
+    # up to g.ANCHOR_MAX (4.0, the decoupled fit's bound), but Stage B's
+    # own prior still caps p2/p3 at 2.5 -- clip the seed so it starts
+    # inside Stage B's own valid range, or its walkers start invalid and
+    # never recover (facc=0.0). theta_for_seedB[0] is always 1.0 (p0,
+    # fixed upstream in Stage 0/A too) so it's dropped here, not seeded.
+    seedB = np.concatenate([theta_for_seedB[1:12], [0.0, 0.0]])
+    seedB[1] = np.clip(seedB[1], 0.42, 2.48)
     seedB[2] = np.clip(seedB[2], 0.42, 2.48)
-    seedB[3] = np.clip(seedB[3], 0.42, 2.48)
-    chainB, faccB, convgB = run_fit(lnprob_stageB, 14, seedB, nwave, nspec, nivar, mw,
-                                     JITTER_14, POS_IDX_14)
-    thetaB = np.median(chainB, axis=0)
+    chainB, faccB, convgB = run_fit(lnprob_stageB_fixedp0, 13, seedB, nwave, nspec, nivar, mw,
+                                     JITTER_13, POS_IDX_13)
+    thetaB_13 = np.median(chainB, axis=0)
+    thetaB = np.concatenate([[1.0], thetaB_13])   # p0=1.0 re-inserted at slot 0 for layout compatibility
     fitB  = CaT_GL_gvary_freecenters(nwave, *thetaB)
     chi2B = dmost_EW.calc_chi2_ew(nwave, nspec, nivar, mw, fitB)
-    catB, catB_err = pct_err(chainB[:,6]+chainB[:,9] + chainB[:,7]+chainB[:,10] + chainB[:,8]+chainB[:,11])
-    ew1_Bm, ew1_Be = pct_err(chainB[:,6]+chainB[:,9])
-    ew2_Bm, ew2_Be = pct_err(chainB[:,7]+chainB[:,10])
-    ew3_Bm, ew3_Be = pct_err(chainB[:,8]+chainB[:,11])
+    catB, catB_err = pct_err(chainB[:,5]+chainB[:,8] + chainB[:,6]+chainB[:,9] + chainB[:,7]+chainB[:,10])
+    ew1_Bm, ew1_Be = pct_err(chainB[:,5]+chainB[:,8])
+    ew2_Bm, ew2_Be = pct_err(chainB[:,6]+chainB[:,9])
+    ew3_Bm, ew3_Be = pct_err(chainB[:,7]+chainB[:,10])
     result = dict(theta=thetaB, fit=fitB, chi2=chi2B, cat=catB, cat_err=catB_err, stage=2,
                   ew=[ew1_Bm, ew2_Bm, ew3_Bm], ew_err=[ew1_Be, ew2_Be, ew3_Be],
                   facc=faccB, convg=convgB, escalation_reason=esc_reason)

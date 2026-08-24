@@ -461,18 +461,185 @@ def run_emcee_decoupled1(wvl, spec, ivar, mw, p2_fixed, p3_fixed, center_margin=
     }
 
 
+########################################################################
+# p0 (LOCAL CONTINUUM LEVEL) FIXED AT 1.0 -- ADOPTED 2026-08-24, REPLACES
+# FREE p0 AS THE PRODUCTION DEFAULT (fit_decoupled_stage BELOW).
+#
+# RATIONALE: p0 was previously a free parameter fit JOINTLY with the line
+# shape, constrained only by off-line pixels WITHIN the 3 CaT windows
+# (mw1|mw23), NOT by the actual continuum bands used in the upstream
+# whole-spectrum normalization (dmost_continuum.CaII_normalize_weighted_
+# looflag). Posterior-chain check (CaT_GL_syserr_Feh research_log_2026-
+# 08-24.html) found: (a) the posterior std(p0) is ~60x tighter than its
+# own prior (data-dominated, prior does ~nothing), but (b) a real, if
+# weak, correlation exists between p0 and total EW in the joint posterior
+# (corr ~0.2-0.4) -- a genuine degeneracy, just a narrow one. A 50-slit
+# ablation (fixing p0=1.0 vs free, same normalized spectrum both ways)
+# found: median |Delta CaT| = 0.079 A (not negligible), corr(Delta CaT,
+# 1-p0_free) = 0.73 (the effect tracks tightly with how far the free fit
+# pulled p0 from 1), and chi2 ESSENTIALLY UNCHANGED (median 1.83 both
+# ways) -- i.e. letting p0 float bought ~no fit-quality improvement while
+# introducing this correlated wobble. Decision: trust the upstream
+# continuum normalization (which already does the weighted, bad-band-
+# dropping fit in the correct bands) completely, and fix p0=1.0 during
+# line fitting instead of re-deriving a second, locally-different
+# estimate of it inside each CaT window.
+#
+# CaT_GL_gvary_decoupled1 (the general 11-param model, p0 free) is KEPT
+# UNCHANGED above -- reconstructing/plotting a stored cat_theta (this run
+# or any legacy pre-2026-08-24 run) must keep working exactly as before.
+# Only the FIT ITSELF (curve_fit seed, emcee dimensionality, prior,
+# likelihood) drops p0 as a free parameter; the returned theta13 still
+# has p0 in slot 0 for layout compatibility, just always =1.0.
+########################################################################
+
+def CaT_GL_gvary_decoupled1_fixedp0(x, p1, dg1, dg3, ds1, p4, p5, p6, p7, p8, p9):
+    return CaT_GL_gvary_decoupled1(x, 1.0, p1, dg1, dg3, ds1, p4, p5, p6, p7, p8, p9)
+
+
+def lnprior_decoupled1_fixedp0(theta, center_margin=1.0):
+    p1, dg1, dg3, ds1, p4, p5, p6, p7, p8, p9 = theta
+
+    if (p1 < CENTER-center_margin) | (p1 > CENTER+center_margin):
+        return -np.inf
+    if (abs(dg1) > GAMMA_DEV_HARDCAP) | (abs(dg3) > GAMMA_DEV_HARDCAP):
+        return -np.inf
+    if abs(ds1) > SIGMA_DEV_HARDCAP:
+        return -np.inf
+    if P2_FIXED * np.exp(ds1) > SIGMA1_ABS_MAX:
+        return -np.inf
+    if P3_FIXED * np.exp(dg1) > GAMMA1_ABS_MAX:
+        return -np.inf
+
+    lnp  = dmost_EW._ln_gauss(p1, CENTER, 0.5)
+    lnp += dmost_EW._ln_gauss(dg1, 0.0, GAMMA_DEV_SCALE_1)
+    lnp += dmost_EW._ln_gauss(dg3, 0.0, GAMMA_DEV_SCALE)
+    lnp += dmost_EW._ln_gauss(ds1, 0.0, SIGMA_DEV_SCALE_1)
+
+    ratio1 = (P3_FIXED*np.exp(dg1)) / (P2_FIXED*np.exp(ds1))
+    ratio3 = (P3_FIXED*np.exp(dg3)) / P2_FIXED
+    lnp += _ln_ratio_prior(ratio1)
+    lnp += _ln_ratio_prior(ratio3)
+    if not np.isfinite(lnp):
+        return -np.inf
+
+    depths = np.array([p4, p5, p6, p7, p8, p9])
+    if np.any(depths < 0):
+        return -np.inf
+
+    EW1, EW2, EW3 = p4+p7, p5+p8, p6+p9
+    if (EW1 <= 0) | (EW2 <= 0) | (EW3 <= 0):
+        return -np.inf
+
+    lnp += -0.5*(EW2/3.0)**2
+    lnp += dmost_EW._ln_gauss(EW1, FLAT_EW1_OVER_EW2*EW2, EW1_SCATTER)
+    lnp += dmost_EW._ln_gauss(EW3, FLAT_EW3_OVER_EW2*EW2, EW3_SCATTER)
+    lnp += dmost_EW._ln_beta_frac(p7, EW1)
+    lnp += dmost_EW._ln_beta_frac(p8, EW2)
+    lnp += dmost_EW._ln_beta_frac(p9, EW3)
+
+    if not np.isfinite(lnp):
+        return -np.inf
+    return lnp
+
+
+def lnlike_decoupled1_fixedp0(theta, wvl, spec, ivar, mw):
+    model = CaT_GL_gvary_decoupled1_fixedp0(wvl[mw], *theta)
+    return -0.5*np.sum((spec[mw]-model)**2 * ivar[mw])
+
+
+def lnprob_decoupled1_fixedp0(theta, wvl, spec, ivar, mw, center_margin=1.0):
+    lp = lnprior_decoupled1_fixedp0(theta, center_margin)
+    if not np.isfinite(lp):
+        return -np.inf
+    return lp + lnlike_decoupled1_fixedp0(theta, wvl, spec, ivar, mw)
+
+
+def guess_decoupled1_fixedp0():
+    Ng = 0.2
+    return [CENTER, 0.0, 0.0, 0.0, Ng, Ng, Ng, Ng, Ng, Ng]
+
+
+def curve_fit_seed_decoupled1_fixedp0(wvl, spec, ivar, mw, center_margin=1.0):
+    seed = guess_decoupled1_fixedp0()
+    seed[1], seed[3] = -0.3, -0.5   # dg1, ds1 -- seed narrower, not at zero
+    errors = 1./np.sqrt(ivar[mw])
+    dg3_floor = np.log(RATIO_MIN * P2_FIXED / P3_FIXED)
+    dg1_floor = np.log(RATIO_MIN * P2_FIXED * np.exp(seed[3]) / P3_FIXED)
+    bounds = ([CENTER-center_margin, max(-GAMMA_DEV_HARDCAP,dg1_floor), max(-GAMMA_DEV_HARDCAP,dg3_floor), -SIGMA_DEV_HARDCAP, 0,0,0, 0,0,0],
+              [CENTER+center_margin,  GAMMA_DEV_HARDCAP,  GAMMA_DEV_HARDCAP,  SIGMA_DEV_HARDCAP, 5,5,5, 5,5,5])
+    try:
+        p, pcov = curve_fit(CaT_GL_gvary_decoupled1_fixedp0, wvl[mw], spec[mw], sigma=errors, p0=seed,
+                             bounds=bounds, maxfev=20000)
+        return np.array(p)
+    except Exception:
+        return np.array(seed)
+
+
+def clip_seed_to_prior_decoupled1_fixedp0(p, margin=0.02, depth_floor=0.05):
+    p = np.array(p, dtype=float)
+    p[0] = np.clip(p[0], CENTER-0.98, CENTER+0.98)
+    p[3] = np.clip(p[3], -SIGMA_DEV_HARDCAP+margin, np.log(SIGMA1_ABS_MAX/P2_FIXED)-margin)
+    dg3_floor = np.log(RATIO_MIN * P2_FIXED / P3_FIXED) + margin
+    dg1_floor = np.log(RATIO_MIN * P2_FIXED * np.exp(p[3]) / P3_FIXED) + margin
+    dg1_cap = np.log(GAMMA1_ABS_MAX / P3_FIXED) - margin
+    p[2] = np.clip(p[2], dg3_floor, None)
+    p[1] = np.clip(p[1], dg1_floor, dg1_cap)
+    p[4:10] = np.clip(p[4:10], depth_floor, None)
+    return p
+
+
+def initialize_walkers_decoupled1_fixedp0(guess, nwalkers=32):
+    ndim = len(guess)
+    jitter = np.array([0.1, 0.05, 0.05, 0.1, 0.03,0.03,0.03, 0.03,0.03,0.03])
+    p0 = guess + jitter*np.random.randn(nwalkers, ndim)
+    p0[:, [4,5,6,7,8,9]] = np.abs(p0[:, [4,5,6,7,8,9]])
+    return ndim, nwalkers, p0
+
+
+def run_emcee_decoupled1_fixedp0(wvl, spec, ivar, mw, p2_fixed, p3_fixed, center_margin=1.0, max_n=3000):
+    global P2_FIXED, P3_FIXED
+    P2_FIXED, P3_FIXED = p2_fixed, p3_fixed
+
+    guess = clip_seed_to_prior_decoupled1_fixedp0(curve_fit_seed_decoupled1_fixedp0(wvl, spec, ivar, mw, center_margin))
+    ndim, nwalkers, p0 = initialize_walkers_decoupled1_fixedp0(guess)
+
+    sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob_decoupled1_fixedp0, args=(wvl, spec, ivar, mw, center_margin))
+    sampler, convg, burnin = dmost_coadd_emcee.run_sampler(sampler, p0, max_n)
+
+    facc  = np.mean(sampler.acceptance_fraction)
+    chain = sampler.chain[:, burnin:, :].reshape((-1, ndim))
+
+    EW1 = chain[:,4] + chain[:,7]
+    EW2 = chain[:,5] + chain[:,8]
+    EW3 = chain[:,6] + chain[:,9]
+
+    theta_med = np.median(chain, axis=0)
+    fit  = CaT_GL_gvary_decoupled1_fixedp0(wvl, *theta_med)
+    chi2 = dmost_EW.calc_chi2_ew(wvl, spec, ivar, mw, fit)
+
+    return {
+        'theta_med': theta_med, 'p2_fixed': p2_fixed, 'p3_fixed': p3_fixed,
+        'cat': pct_err(EW1+EW2+EW3),
+        'ew1': pct_err(EW1), 'ew2': pct_err(EW2), 'ew3': pct_err(EW3),
+        'facc': facc, 'convg': convg, 'burnin': burnin,
+        'fit': fit, 'chi2': chi2,
+    }
+
+
 def fit_decoupled_stage(wvl, spec, ivar, mw1, mw23, center_margin=1.0):
-    '''One-call wrapper: anchor fit (EW2+EW3) then full fit (p2/p3 fixed).
-    Returns theta as 13 values: p0,p1,p2,p3,dg1,dg3,p4..p9,ds1 -- same
-    order as the old 12-param model with ds1 appended, so old code
-    reading theta[:12] still works.'''
+    '''One-call wrapper: anchor fit (EW2+EW3) then full fit (p2/p3 fixed,
+    p0 fixed at 1.0 -- see the p0-fixed-at-1.0 block above). Returns
+    theta as 13 values: p0,p1,p2,p3,dg1,dg3,p4..p9,ds1 -- same order as
+    the old 12-param model with ds1 appended, so old code reading
+    theta[:12] still works. p0 (slot 0) is always 1.0.'''
     mw = mw1 | mw23
     p_anchor = fit_anchor_stage1(wvl, spec, ivar, mw23, center_margin)
     p2f, p3f = p_anchor[2], p_anchor[3]
-    result = run_emcee_decoupled1(wvl, spec, ivar, mw, p2f, p3f, center_margin)
-    p0,p1,dg1,dg3,ds1,p4,p5,p6,p7,p8,p9 = result['theta_med']
-    theta13 = np.array([p0,p1,p2f,p3f,dg1,dg3,p4,p5,p6,p7,p8,p9,ds1])
-    fit = CaT_GL_gvary_decoupled1(wvl, p0,p1,dg1,dg3,ds1,p4,p5,p6,p7,p8,p9)
+    result = run_emcee_decoupled1_fixedp0(wvl, spec, ivar, mw, p2f, p3f, center_margin)
+    p1,dg1,dg3,ds1,p4,p5,p6,p7,p8,p9 = result['theta_med']
+    theta13 = np.array([1.0,p1,p2f,p3f,dg1,dg3,p4,p5,p6,p7,p8,p9,ds1])
+    fit = CaT_GL_gvary_decoupled1(wvl, 1.0,p1,dg1,dg3,ds1,p4,p5,p6,p7,p8,p9)
     result['theta13'] = theta13
     result['fit'] = fit
     return result
