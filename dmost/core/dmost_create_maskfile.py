@@ -200,6 +200,7 @@ def create_slits(nslits,nexp):
             filled_column('cat_good',-999,nslits),
             filled_column('cat_chi2_flag',-999,nslits),
             filled_column('cat_adapt_stage',-999,nslits),
+            filled_column('cat_ew_flag',-999,nslits),   # 0=NONE, 1=EW1 ANALYTICALLY SUBSTITUTED (NO DATA COVERAGE), 2=EW3 SUBSTITUTED, 3=BOTH
             filled_column('naI',-999.,nslits),
             filled_column('naI_err',-999.,nslits),
             filled_column('mgI',-999.,nslits),

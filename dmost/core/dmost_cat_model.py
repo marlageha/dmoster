@@ -643,3 +643,440 @@ def fit_decoupled_stage(wvl, spec, ivar, mw1, mw23, center_margin=1.0):
     result['theta13'] = theta13
     result['fit'] = fit
     return result
+
+
+########################################################################
+# MISSING-LINE-COVERAGE HANDLING -- ADOPTED 2026-08-24.
+#
+# SOME SLITS HAVE NO USABLE PIXELS IN THE EW1 (8498) OR EW3 (8662) WINDOW
+# AT ALL (VIGNETTING/DEAD-CHIP EDGE, OVERWHELMINGLY THE RED EDGE --
+# FULL-DATABASE SCAN OF THE 677-MASK RUN: 1032 SLITS MISSING EW3, 21
+# MISSING EW1, 2 MISSING BOTH, OUT OF THE QUALITY-CUT SAMPLE --
+# missing_ew_coverage_scan.csv, CaT_GL_syserr_Feh research_log_2026-08-
+# 24.html). LETTING THE NORMAL FIT SAMPLE THAT LINE'S OWN DEPTH/WIDTH
+# PARAMETERS ANYWAY MEANS THOSE PARAMETERS ARE PURE PRIOR (NO DATA TO
+# CONSTRAIN THEM), WHICH PRODUCES GENUINE MCMC MULTIMODALITY/INSTABILITY
+# (CONFIRMED ON TWO REAL SLITS BY MULTI-SEED RERUNS -- NOT A SMALL-NUMBER
+# EFFECT, A REAL SAMPLER PATHOLOGY THAT CAN HIT EITHER OF TWO DIFFERENT
+# FIT CONFIGURATIONS UNPREDICTABLY).
+#
+# FIX: DETECT PER-LINE COVERAGE (>=90% OF EXPECTED PIXELS IN THE WINDOW
+# HAVE USABLE ivar -- SAME CONVENTION AS dmost_continuum's
+# MIN_COVERAGE_FRAC), DROP THE MISSING LINE'S OWN PARAMETERS FROM THE
+# SAMPLED VECTOR ENTIRELY (A GENUINELY REDUCED-DIMENSION FIT, NOT JUST A
+# WIDE PRIOR ON AN UNCONSTRAINED PARAMETER), THEN ANALYTICALLY SUBSTITUTE
+# ITS EW FROM THE SAME FLAT EW-RATIO PRIOR USED EVERYWHERE ELSE IN THIS
+# MODEL, CONDITIONED ON THE FITTED EW2 POSTERIOR: PER POSTERIOR SAMPLE,
+# EW_missing = ratio*EW2 + N(0, intrinsic_scatter) -- SO BOTH THE EW2
+# POSTERIOR WIDTH AND THE INTRINSIC RATIO SCATTER PROPAGATE INTO THE
+# REPORTED ERROR THROUGH THE USUAL pct_err PERCENTILE SPREAD, NO SEPARATE
+# QUADRATURE BOOKKEEPING NEEDED. VALIDATED ON THE SAME TWO SLITS: CLEAN,
+# DETERMINISTIC VALUES REPLACING THE UNSTABLE MCMC-DERIVED ONES.
+#
+# A SLIT FLAGGED HERE IS TERMINAL AT "STAGE 0 + SUBSTITUTION" -- IT NEVER
+# ESCALATES TO STAGE A/B (dmost_cat_fit.fit_adaptive_GL_gvary). STAGE A
+# ONLY WIDENS THE CENTER PRIOR AND STAGE B ADDS FREE PER-LINE CENTERS --
+# NEITHER HELPS A LINE WITH ZERO DATA PIXELS, AND THE r23/anchor_stuck
+# ESCALATION TRIGGERS ARE MEANINGLESS HERE ANYWAY (EW3/EW1 IS BY
+# CONSTRUCTION PINNED TO THE FIXED PRIOR RATIO, NOT A DATA-DRIVEN
+# MEASUREMENT THAT COULD LOOK ANOMALOUS).
+########################################################################
+
+EW1_WIN = (8484., 8513.)
+EW3_WIN = (8642., 8682.)
+MIN_LINE_COVERAGE = 0.90
+
+
+def check_missing_lines(nwave, nivar):
+    '''>=90% expected-pixel coverage required in each CaT window (same
+    threshold convention as dmost_continuum.MIN_COVERAGE_FRAC), else that
+    line has no usable data to constrain its own fit parameters at all.
+    Returns (missing1, missing3) booleans.'''
+    dwave = float(np.median(np.diff(np.sort(nwave))))
+
+    def frac(wlo, whi):
+        expected = (whi - wlo) / dwave
+        actual = np.sum((nwave > wlo) & (nwave < whi) & (nivar > 0))
+        return actual / expected if expected > 0 else 0.0
+
+    return frac(*EW1_WIN) < MIN_LINE_COVERAGE, frac(*EW3_WIN) < MIN_LINE_COVERAGE
+
+
+# ---- EW3 missing: EW1+EW2 only, 7 free params (p1,dg1,ds1,p4,p5,p7,p8) ----
+def CaT_GL_gvary_missing3(x, p1, dg1, ds1, p4, p5, p7, p8):
+    p2, p3 = P2_FIXED, P3_FIXED
+    sigma1 = p2 * np.exp(ds1)
+    norm1 = 1./(np.sqrt(2*np.pi) * sigma1)
+    norm  = 1./(np.sqrt(2*np.pi) * p2)
+    gauss = p4*norm1*np.exp(-0.5*((x-p1*R1)/sigma1)**2) + \
+            p5*norm *np.exp(-0.5*((x-p1)   /p2   )**2)
+
+    gamma1 = p3*np.exp(dg1)
+    norm2_1, norm2_2 = gamma1/(2.*np.pi), p3/(2.*np.pi)
+    lorentz = (p7*norm2_1/((x-p1*R1)**2 + (gamma1/2.)**2)) + \
+              (p8*norm2_2/((x-p1)   **2 + (p3    /2.)**2))
+
+    return 1.0 * (1. - gauss - lorentz)
+
+
+def lnprior_missing3(theta, center_margin=1.0):
+    p1, dg1, ds1, p4, p5, p7, p8 = theta
+
+    if (p1 < CENTER-center_margin) | (p1 > CENTER+center_margin):
+        return -np.inf
+    if abs(dg1) > GAMMA_DEV_HARDCAP:
+        return -np.inf
+    if abs(ds1) > SIGMA_DEV_HARDCAP:
+        return -np.inf
+    if P2_FIXED * np.exp(ds1) > SIGMA1_ABS_MAX:
+        return -np.inf
+    if P3_FIXED * np.exp(dg1) > GAMMA1_ABS_MAX:
+        return -np.inf
+
+    lnp  = dmost_EW._ln_gauss(p1, CENTER, 0.5)
+    lnp += dmost_EW._ln_gauss(dg1, 0.0, GAMMA_DEV_SCALE_1)
+    lnp += dmost_EW._ln_gauss(ds1, 0.0, SIGMA_DEV_SCALE_1)
+
+    ratio1 = (P3_FIXED*np.exp(dg1)) / (P2_FIXED*np.exp(ds1))
+    lnp += _ln_ratio_prior(ratio1)
+    if not np.isfinite(lnp):
+        return -np.inf
+
+    if (p4 < 0) | (p5 < 0) | (p7 < 0) | (p8 < 0):
+        return -np.inf
+    EW1, EW2 = p4+p7, p5+p8
+    if (EW1 <= 0) | (EW2 <= 0):
+        return -np.inf
+
+    lnp += -0.5*(EW2/3.0)**2
+    lnp += dmost_EW._ln_gauss(EW1, FLAT_EW1_OVER_EW2*EW2, EW1_SCATTER)
+    lnp += dmost_EW._ln_beta_frac(p7, EW1)
+    lnp += dmost_EW._ln_beta_frac(p8, EW2)
+
+    if not np.isfinite(lnp):
+        return -np.inf
+    return lnp
+
+
+def lnlike_missing3(theta, wvl, spec, ivar, mw):
+    model = CaT_GL_gvary_missing3(wvl[mw], *theta)
+    return -0.5*np.sum((spec[mw]-model)**2 * ivar[mw])
+
+
+def lnprob_missing3(theta, wvl, spec, ivar, mw, center_margin=1.0):
+    lp = lnprior_missing3(theta, center_margin)
+    if not np.isfinite(lp):
+        return -np.inf
+    return lp + lnlike_missing3(theta, wvl, spec, ivar, mw)
+
+
+def guess_missing3():
+    Ng = 0.2
+    return [CENTER, -0.3, -0.5, Ng, Ng, Ng, Ng]
+
+
+def curve_fit_seed_missing3(wvl, spec, ivar, mw, center_margin=1.0):
+    seed = guess_missing3()
+    errors = 1./np.sqrt(ivar[mw])
+    dg1_floor = np.log(RATIO_MIN * P2_FIXED * np.exp(seed[2]) / P3_FIXED)
+    bounds = ([CENTER-center_margin, max(-GAMMA_DEV_HARDCAP,dg1_floor), -SIGMA_DEV_HARDCAP, 0,0,0,0],
+              [CENTER+center_margin,  GAMMA_DEV_HARDCAP,  SIGMA_DEV_HARDCAP, 5,5,5,5])
+    try:
+        p, pcov = curve_fit(CaT_GL_gvary_missing3, wvl[mw], spec[mw], sigma=errors, p0=seed,
+                             bounds=bounds, maxfev=20000)
+        return np.array(p)
+    except Exception:
+        return np.array(seed)
+
+
+def clip_seed_missing3(p, margin=0.02, depth_floor=0.05):
+    p = np.array(p, dtype=float)
+    p[0] = np.clip(p[0], CENTER-0.98, CENTER+0.98)
+    p[2] = np.clip(p[2], -SIGMA_DEV_HARDCAP+margin, np.log(SIGMA1_ABS_MAX/P2_FIXED)-margin)
+    dg1_floor = np.log(RATIO_MIN * P2_FIXED * np.exp(p[2]) / P3_FIXED) + margin
+    dg1_cap = np.log(GAMMA1_ABS_MAX / P3_FIXED) - margin
+    p[1] = np.clip(p[1], dg1_floor, dg1_cap)
+    p[3:7] = np.clip(p[3:7], depth_floor, None)
+    return p
+
+
+def run_emcee_missing3(wvl, spec, ivar, mw, p2_fixed, p3_fixed, center_margin=1.0, max_n=3000):
+    global P2_FIXED, P3_FIXED
+    P2_FIXED, P3_FIXED = p2_fixed, p3_fixed
+
+    guess = clip_seed_missing3(curve_fit_seed_missing3(wvl, spec, ivar, mw, center_margin))
+    ndim = len(guess)
+    nwalkers = 32
+    jitter = np.array([0.1, 0.05, 0.1, 0.03,0.03, 0.03,0.03])
+    p0 = guess + jitter*np.random.randn(nwalkers, ndim)
+    p0[:, [3,4,5,6]] = np.abs(p0[:, [3,4,5,6]])
+
+    sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob_missing3, args=(wvl, spec, ivar, mw, center_margin))
+    sampler, convg, burnin = dmost_coadd_emcee.run_sampler(sampler, p0, max_n)
+    facc  = np.mean(sampler.acceptance_fraction)
+    chain = sampler.chain[:, burnin:, :].reshape((-1, ndim))
+
+    EW1 = chain[:,3] + chain[:,5]
+    EW2 = chain[:,4] + chain[:,6]
+    EW3 = FLAT_EW3_OVER_EW2*EW2 + np.random.normal(0.0, EW3_SCATTER, size=EW2.shape)
+
+    theta_med = np.median(chain, axis=0)
+    fit  = CaT_GL_gvary_missing3(wvl, *theta_med)
+    chi2 = dmost_EW.calc_chi2_ew(wvl, spec, ivar, mw, fit)
+
+    return {
+        'theta_med': theta_med, 'p2_fixed': p2_fixed, 'p3_fixed': p3_fixed,
+        'cat': pct_err(EW1+EW2+EW3),
+        'ew1': pct_err(EW1), 'ew2': pct_err(EW2), 'ew3': pct_err(EW3),
+        'facc': facc, 'convg': convg, 'burnin': burnin,
+        'fit': fit, 'chi2': chi2,
+    }
+
+
+# ---- EW1 missing: EW2+EW3 only, 6 free params -- SAME MODEL SHAPE AS
+# anchor_model, JUST WITH p0 FIXED AT 1.0 INSTEAD OF FREE ----
+def CaT_GL_gvary_missing1(x, p1, dg3, p5, p6, p8, p9):
+    return anchor_model(x, 1.0, p1, P2_FIXED, P3_FIXED, dg3, p5, p6, p8, p9)
+
+
+def lnprior_missing1(theta, center_margin=1.0):
+    p1, dg3, p5, p6, p8, p9 = theta
+
+    if (p1 < CENTER-center_margin) | (p1 > CENTER+center_margin):
+        return -np.inf
+    if abs(dg3) > GAMMA_DEV_HARDCAP:
+        return -np.inf
+
+    lnp  = dmost_EW._ln_gauss(p1, CENTER, 0.5)
+    lnp += dmost_EW._ln_gauss(dg3, 0.0, GAMMA_DEV_SCALE)
+    ratio3 = (P3_FIXED*np.exp(dg3)) / P2_FIXED
+    lnp += _ln_ratio_prior(ratio3)
+    if not np.isfinite(lnp):
+        return -np.inf
+
+    if (p5 < 0) | (p6 < 0) | (p8 < 0) | (p9 < 0):
+        return -np.inf
+    EW2, EW3 = p5+p8, p6+p9
+    if (EW2 <= 0) | (EW3 <= 0):
+        return -np.inf
+
+    lnp += -0.5*(EW2/3.0)**2
+    lnp += dmost_EW._ln_gauss(EW3, FLAT_EW3_OVER_EW2*EW2, EW3_SCATTER)
+    lnp += dmost_EW._ln_beta_frac(p8, EW2)
+    lnp += dmost_EW._ln_beta_frac(p9, EW3)
+
+    if not np.isfinite(lnp):
+        return -np.inf
+    return lnp
+
+
+def lnlike_missing1(theta, wvl, spec, ivar, mw):
+    model = CaT_GL_gvary_missing1(wvl[mw], *theta)
+    return -0.5*np.sum((spec[mw]-model)**2 * ivar[mw])
+
+
+def lnprob_missing1(theta, wvl, spec, ivar, mw, center_margin=1.0):
+    lp = lnprior_missing1(theta, center_margin)
+    if not np.isfinite(lp):
+        return -np.inf
+    return lp + lnlike_missing1(theta, wvl, spec, ivar, mw)
+
+
+def guess_missing1():
+    Ng = 0.2
+    return [CENTER, 0.0, Ng, Ng, Ng, Ng]
+
+
+def curve_fit_seed_missing1(wvl, spec, ivar, mw, center_margin=1.0):
+    seed = guess_missing1()
+    errors = 1./np.sqrt(ivar[mw])
+    dg3_floor = np.log(RATIO_MIN * P2_FIXED / P3_FIXED)
+    bounds = ([CENTER-center_margin, max(-GAMMA_DEV_HARDCAP,dg3_floor), 0,0,0,0],
+              [CENTER+center_margin,  GAMMA_DEV_HARDCAP, 5,5,5,5])
+    try:
+        p, pcov = curve_fit(CaT_GL_gvary_missing1, wvl[mw], spec[mw], sigma=errors, p0=seed,
+                             bounds=bounds, maxfev=20000)
+        return np.array(p)
+    except Exception:
+        return np.array(seed)
+
+
+def clip_seed_missing1(p, margin=0.02, depth_floor=0.05):
+    p = np.array(p, dtype=float)
+    p[0] = np.clip(p[0], CENTER-0.98, CENTER+0.98)
+    dg3_floor = np.log(RATIO_MIN * P2_FIXED / P3_FIXED) + margin
+    p[1] = np.clip(p[1], dg3_floor, None)
+    p[2:6] = np.clip(p[2:6], depth_floor, None)
+    return p
+
+
+def run_emcee_missing1(wvl, spec, ivar, mw, p2_fixed, p3_fixed, center_margin=1.0, max_n=3000):
+    global P2_FIXED, P3_FIXED
+    P2_FIXED, P3_FIXED = p2_fixed, p3_fixed
+
+    guess = clip_seed_missing1(curve_fit_seed_missing1(wvl, spec, ivar, mw, center_margin))
+    ndim = len(guess)
+    nwalkers = 32
+    jitter = np.array([0.1, 0.05, 0.03,0.03, 0.03,0.03])
+    p0 = guess + jitter*np.random.randn(nwalkers, ndim)
+    p0[:, [2,3,4,5]] = np.abs(p0[:, [2,3,4,5]])
+
+    sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob_missing1, args=(wvl, spec, ivar, mw, center_margin))
+    sampler, convg, burnin = dmost_coadd_emcee.run_sampler(sampler, p0, max_n)
+    facc  = np.mean(sampler.acceptance_fraction)
+    chain = sampler.chain[:, burnin:, :].reshape((-1, ndim))
+
+    EW2 = chain[:,2] + chain[:,4]
+    EW3 = chain[:,3] + chain[:,5]
+    EW1 = FLAT_EW1_OVER_EW2*EW2 + np.random.normal(0.0, EW1_SCATTER, size=EW2.shape)
+
+    theta_med = np.median(chain, axis=0)
+    fit  = CaT_GL_gvary_missing1(wvl, *theta_med)
+    chi2 = dmost_EW.calc_chi2_ew(wvl, spec, ivar, mw, fit)
+
+    return {
+        'theta_med': theta_med, 'p2_fixed': p2_fixed, 'p3_fixed': p3_fixed,
+        'cat': pct_err(EW1+EW2+EW3),
+        'ew1': pct_err(EW1), 'ew2': pct_err(EW2), 'ew3': pct_err(EW3),
+        'facc': facc, 'convg': convg, 'burnin': burnin,
+        'fit': fit, 'chi2': chi2,
+    }
+
+
+# ---- both missing (rare): EW2 only, 3 free params ----
+def CaT_GL_gvary_missingboth(x, p1, p5, p8):
+    p2, p3 = P2_FIXED, P3_FIXED
+    norm = 1./(np.sqrt(2*np.pi) * p2)
+    gauss = p5*norm*np.exp(-0.5*((x-p1)/p2)**2)
+    norm2 = p3/(2.*np.pi)
+    lorentz = p8*norm2/((x-p1)**2 + (p3/2.)**2)
+    return 1.0 * (1. - gauss - lorentz)
+
+
+def lnprior_missingboth(theta, center_margin=1.0):
+    p1, p5, p8 = theta
+
+    if (p1 < CENTER-center_margin) | (p1 > CENTER+center_margin):
+        return -np.inf
+    if (p5 < 0) | (p8 < 0):
+        return -np.inf
+    EW2 = p5+p8
+    if EW2 <= 0:
+        return -np.inf
+
+    lnp  = dmost_EW._ln_gauss(p1, CENTER, 0.5)
+    lnp += -0.5*(EW2/3.0)**2
+    lnp += dmost_EW._ln_beta_frac(p8, EW2)
+    if not np.isfinite(lnp):
+        return -np.inf
+    return lnp
+
+
+def lnlike_missingboth(theta, wvl, spec, ivar, mw):
+    model = CaT_GL_gvary_missingboth(wvl[mw], *theta)
+    return -0.5*np.sum((spec[mw]-model)**2 * ivar[mw])
+
+
+def lnprob_missingboth(theta, wvl, spec, ivar, mw, center_margin=1.0):
+    lp = lnprior_missingboth(theta, center_margin)
+    if not np.isfinite(lp):
+        return -np.inf
+    return lp + lnlike_missingboth(theta, wvl, spec, ivar, mw)
+
+
+def guess_missingboth():
+    Ng = 0.2
+    return [CENTER, Ng, Ng]
+
+
+def curve_fit_seed_missingboth(wvl, spec, ivar, mw, center_margin=1.0):
+    seed = guess_missingboth()
+    errors = 1./np.sqrt(ivar[mw])
+    bounds = ([CENTER-center_margin, 0, 0], [CENTER+center_margin, 5, 5])
+    try:
+        p, pcov = curve_fit(CaT_GL_gvary_missingboth, wvl[mw], spec[mw], sigma=errors, p0=seed,
+                             bounds=bounds, maxfev=20000)
+        return np.array(p)
+    except Exception:
+        return np.array(seed)
+
+
+def clip_seed_missingboth(p, margin=0.02, depth_floor=0.05):
+    p = np.array(p, dtype=float)
+    p[0] = np.clip(p[0], CENTER-0.98, CENTER+0.98)
+    p[1:3] = np.clip(p[1:3], depth_floor, None)
+    return p
+
+
+def run_emcee_missingboth(wvl, spec, ivar, mw, p2_fixed, p3_fixed, center_margin=1.0, max_n=3000):
+    global P2_FIXED, P3_FIXED
+    P2_FIXED, P3_FIXED = p2_fixed, p3_fixed
+
+    guess = clip_seed_missingboth(curve_fit_seed_missingboth(wvl, spec, ivar, mw, center_margin))
+    ndim = len(guess)
+    nwalkers = 32
+    jitter = np.array([0.1, 0.03, 0.03])
+    p0 = guess + jitter*np.random.randn(nwalkers, ndim)
+    p0[:, [1,2]] = np.abs(p0[:, [1,2]])
+
+    sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob_missingboth, args=(wvl, spec, ivar, mw, center_margin))
+    sampler, convg, burnin = dmost_coadd_emcee.run_sampler(sampler, p0, max_n)
+    facc  = np.mean(sampler.acceptance_fraction)
+    chain = sampler.chain[:, burnin:, :].reshape((-1, ndim))
+
+    EW2 = chain[:,1] + chain[:,2]
+    EW1 = FLAT_EW1_OVER_EW2*EW2 + np.random.normal(0.0, EW1_SCATTER, size=EW2.shape)
+    EW3 = FLAT_EW3_OVER_EW2*EW2 + np.random.normal(0.0, EW3_SCATTER, size=EW2.shape)
+
+    theta_med = np.median(chain, axis=0)
+    fit  = CaT_GL_gvary_missingboth(wvl, *theta_med)
+    chi2 = dmost_EW.calc_chi2_ew(wvl, spec, ivar, mw, fit)
+
+    return {
+        'theta_med': theta_med, 'p2_fixed': p2_fixed, 'p3_fixed': p3_fixed,
+        'cat': pct_err(EW1+EW2+EW3),
+        'ew1': pct_err(EW1), 'ew2': pct_err(EW2), 'ew3': pct_err(EW3),
+        'facc': facc, 'convg': convg, 'burnin': burnin,
+        'fit': fit, 'chi2': chi2,
+    }
+
+
+def fit_decoupled_stage_missing(wvl, spec, ivar, mw1, mw23, missing1, missing3, center_margin=1.0):
+    '''Same contract/return-dict shape as fit_decoupled_stage, for slits
+    with no usable data in the EW1 and/or EW3 window (see
+    check_missing_lines). The missing line's own parameters are dropped
+    from the sampled vector entirely -- a genuinely reduced-dimension
+    fit, not just a wide prior on an unconstrained parameter -- and its
+    EW/error are substituted analytically from the flat EW-ratio prior
+    conditioned on the fitted EW2 posterior (see module docstring above).
+    Returns the same theta13 layout as fit_decoupled_stage; the missing
+    line's own depth params are back-filled with a nominal 50/50
+    gauss/lorentz split of its substituted EW purely so the curve still
+    reconstructs sensibly for QA overlays -- the reported EW/err never
+    come from that split, only from the substitution itself.'''
+    mw = mw1 | mw23
+    p_anchor = fit_anchor_stage1(wvl, spec, ivar, mw23, center_margin)
+    p2f, p3f = p_anchor[2], p_anchor[3]
+
+    if missing1 and missing3:
+        result = run_emcee_missingboth(wvl, spec, ivar, mw, p2f, p3f, center_margin)
+        p1, p5, p8 = result['theta_med']
+        dg1, dg3, ds1 = 0.0, 0.0, 0.0
+        p4 = p7 = result['ew1'][0] / 2.
+        p6 = p9 = result['ew3'][0] / 2.
+    elif missing3:
+        result = run_emcee_missing3(wvl, spec, ivar, mw, p2f, p3f, center_margin)
+        p1, dg1, ds1, p4, p5, p7, p8 = result['theta_med']
+        dg3 = 0.0
+        p6 = p9 = result['ew3'][0] / 2.
+    else:   # missing1
+        result = run_emcee_missing1(wvl, spec, ivar, mw, p2f, p3f, center_margin)
+        p1, dg3, p5, p6, p8, p9 = result['theta_med']
+        dg1, ds1 = 0.0, 0.0
+        p4 = p7 = result['ew1'][0] / 2.
+
+    theta13 = np.array([1.0,p1,p2f,p3f,dg1,dg3,p4,p5,p6,p7,p8,p9,ds1])
+    fit = CaT_GL_gvary_decoupled1(wvl, 1.0,p1,dg1,dg3,ds1,p4,p5,p6,p7,p8,p9)
+    result['theta13'] = theta13
+    result['fit'] = fit
+    return result

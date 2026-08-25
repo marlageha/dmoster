@@ -367,6 +367,7 @@ def calc_all_EW(data_dir, slits, mask, arg, pdf, rng):
         slits['cat_all'][arg]         = result['ew']
         slits['cat_all_err'][arg]     = result['ew_err']
         slits['cat_adapt_stage'][arg] = result['stage']
+        slits['cat_ew_flag'][arg]     = result['ew_flag']
         slits['cat_f_acc'][arg]       = result['facc']
         slits['cat_converge'][arg]    = result['convg']
         slits['cat_good'][arg]        = 1 if (result['convg'] > 0) and (0.2 < result['facc'] < 0.8) else 0
@@ -453,7 +454,7 @@ def run_coadd_EW(data_dir, slits, mask):
         if col not in slits.colnames:
             slits[col] = default
     for col in ['cat', 'cat_err', 'cat_chi2', 'cat_f_acc', 'cat_converge', 'cat_good',
-                'cat_chi2_flag', 'cat_adapt_stage']:
+                'cat_chi2_flag', 'cat_adapt_stage', 'cat_ew_flag']:
         if col not in slits.colnames:
             slits[col] = -999.
 

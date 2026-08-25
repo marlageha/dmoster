@@ -309,10 +309,34 @@ def fit_adaptive_GL_gvary(nwave, nspec, nivar, mw):
     still the shared-width model, seeded from thetaA[:12] (drops ds1,
     which Stage B doesn't use).
     RETURNS A DICT: theta, fit (curve), chi2, cat, cat_err, ew (LIST OF 3),
-    ew_err (LIST OF 3), stage (0/1/2), facc, convg, escalation_reason.
+    ew_err (LIST OF 3), stage (0/1/2), facc, convg, escalation_reason,
+    ew_flag (0=none, 1=EW1 analytically substituted [no data coverage],
+    2=EW3 substituted, 3=both -- see dmost_cat_model.py's missing-line-
+    coverage section).
     '''
     mw1  = (nwave > 8484) & (nwave < 8513)
     mw23 = ((nwave > 8522) & (nwave < 8562)) | ((nwave > 8642) & (nwave < 8682))
+
+    # MISSING-LINE-COVERAGE HANDLING (dmost_cat_model.py, ADOPTED 2026-08-24):
+    # NO USABLE DATA AT ALL IN THE EW1 AND/OR EW3 WINDOW -- FIT A GENUINELY
+    # REDUCED-DIMENSION MODEL (MISSING LINE'S OWN PARAMS DROPPED, NOT JUST
+    # WIDE-PRIORED) AND SUBSTITUTE ITS EW ANALYTICALLY FROM THE EW2-
+    # CONDITIONED PRIOR. TERMINAL HERE -- NEVER ESCALATES TO STAGE A/B (SEE
+    # dmost_cat_model.py DOCSTRING FOR WHY). ew_flag: 0=NONE, 1=EW1
+    # SUBSTITUTED, 2=EW3 SUBSTITUTED, 3=BOTH.
+    missing1, missing3 = g.check_missing_lines(nwave, nivar)
+    if missing1 or missing3:
+        result0 = g.fit_decoupled_stage_missing(nwave, nspec, nivar, mw1, mw23, missing1, missing3, center_margin=1.0)
+        theta0 = result0['theta13']
+        chi2_0 = dmost_EW.calc_chi2_ew(nwave, nspec, nivar, mw, result0['fit'])
+        esc_reason = 'missing_ew1' if (missing1 and not missing3) else ('missing_ew3' if (missing3 and not missing1) else 'missing_both')
+        ew_flag = (1 if missing1 else 0) + (2 if missing3 else 0)
+        return dict(theta=theta0, fit=result0['fit'], chi2=chi2_0,
+                    cat=result0['cat'][0], cat_err=result0['cat'][1], stage=0,
+                    ew=[result0['ew1'][0], result0['ew2'][0], result0['ew3'][0]],
+                    ew_err=[result0['ew1'][1], result0['ew2'][1], result0['ew3'][1]],
+                    facc=result0['facc'], convg=result0['convg'],
+                    escalation_reason=esc_reason, ew_flag=ew_flag)
 
     result0 = g.fit_decoupled_stage(nwave, nspec, nivar, mw1, mw23, center_margin=1.0)
     theta0 = result0['theta13']
@@ -323,7 +347,7 @@ def fit_adaptive_GL_gvary(nwave, nspec, nivar, mw):
                   ew=[result0['ew1'][0], result0['ew2'][0], result0['ew3'][0]],
                   ew_err=[result0['ew1'][1], result0['ew2'][1], result0['ew3'][1]],
                   facc=result0['facc'], convg=result0['convg'],
-                  escalation_reason=None)
+                  escalation_reason=None, ew_flag=0)
 
     # anchor pinned at its bound -> Stage 1 was forced into a bad compromise
     # fit (usually a mis-centered line it can't reach with a fixed center),
@@ -367,7 +391,7 @@ def fit_adaptive_GL_gvary(nwave, nspec, nivar, mw):
                       ew=[resultA['ew1'][0], resultA['ew2'][0], resultA['ew3'][0]],
                       ew_err=[resultA['ew1'][1], resultA['ew2'][1], resultA['ew3'][1]],
                       facc=resultA['facc'], convg=resultA['convg'],
-                      escalation_reason=esc_reason)
+                      escalation_reason=esc_reason, ew_flag=0)
 
         anchor_stuckA = (resultA['p2_fixed'] >= g.ANCHOR_MAX-1e-6) or (resultA['p3_fixed'] >= g.ANCHOR_MAX-1e-6)
         r23A = ew2A/ew3A if ew3A > 0 else np.nan
@@ -399,5 +423,5 @@ def fit_adaptive_GL_gvary(nwave, nspec, nivar, mw):
     ew3_Bm, ew3_Be = pct_err(chainB[:,7]+chainB[:,10])
     result = dict(theta=thetaB, fit=fitB, chi2=chi2B, cat=catB, cat_err=catB_err, stage=2,
                   ew=[ew1_Bm, ew2_Bm, ew3_Bm], ew_err=[ew1_Be, ew2_Be, ew3_Be],
-                  facc=faccB, convg=convgB, escalation_reason=esc_reason)
+                  facc=faccB, convg=convgB, escalation_reason=esc_reason, ew_flag=0)
     return result
