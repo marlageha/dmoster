@@ -28,8 +28,26 @@ DEIMOS_REDUX   = os.getenv('DEIMOS_REDUX')
 # CHI2-VS-S/N ENVELOPE FOR THE ADAPTIVE GL-gvary CaT FIT (dmost_chi2_criteria.
 # curve_form: floor + b*SN^2), FIT TO THE FULL FLATPRIOR DATABASE'S OWN
 # chi2-vs-S/N POPULATION -- FIXED HERE, NOT REFIT PER MASK.
-CHI2_ENVELOPE_FLOOR = 3.448
-CHI2_ENVELOPE_B     = 0.008564
+#
+# REVISED 2026-08-25: the values below (3.448/0.008564) had been carried
+# unchanged since early in this pipeline's history and were flagging
+# essentially nothing database-wide (0/31819 slits at full scale) --
+# genuinely catastrophic fits at S/N>200 were slipping through because the
+# envelope's b coefficient, fit long ago on a much smaller/lower-S/N
+# sample, extrapolated far too loosely into the high-S/N regime. Refit
+# against this pipeline's own current chi2-vs-S/N population (98th-pctile
+# first, found TOO aggressive -- ~60% of what it flagged were ordinary
+# scatter on visual inspection, not real failures; then 99th-pctile,
+# quadratic form, which tracked the outlier population cleanly without
+# nulling good fits). Verified robust to a battery of alternative curve
+# forms (free power-law, linear, sqrt, piecewise flat+quadratic -- linear
+# and sqrt clearly underfit the high-S/N curvature, the rest are
+# statistically indistinguishable from this quadratic fit) and to
+# excluding any single field (Ter5, 477 slits -- floor/b barely move).
+# See CaT_GL_syserr_Feh/research_log_2026-08-25.html for the full
+# derivation and validation.
+CHI2_ENVELOPE_FLOOR = 5.489
+CHI2_ENVELOPE_B     = 0.004019
 
 
 ######################################################
