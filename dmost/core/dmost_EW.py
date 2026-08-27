@@ -368,9 +368,9 @@ def calc_all_EW(data_dir, slits, mask, arg, pdf, rng):
         mw3 = (nwave > 8642) & (nwave < 8682)
         mw  = mw1 | mw2 | mw3
 
-        # ADAPTIVE STAGE 0/A/B GL-gvary FIT (DECOUPLED WIDTHS, FREE
+        # ADAPTIVE STAGE 1/STAGE 2 GL-gvary FIT (DECOUPLED WIDTHS, FREE
         # CENTERS AND LOW-CaT ESCALATION AS NEEDED -- SEE dmost_cat_fit.py)
-        result = dmost_cat_fit.fit_adaptive_GL_gvary(nwave, nspec, nivar, mw)
+        result = dmost_cat_fit.fit_adaptive_GL_gvary(nwave, nspec, nivar, mw, SN)
 
         CaT_fit  = result['fit']
         CaT_chi2 = result['chi2']
