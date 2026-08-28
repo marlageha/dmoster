@@ -302,6 +302,17 @@ def fit_adaptive_GL_gvary(nwave, nspec, nivar, mw, SN):
         theta0 = result0['theta13']
         chi2_0 = dmost_EW.calc_chi2_ew(nwave, nspec, nivar, mw, result0['fit'])
         esc_reason = 'missing_ew1' if (missing1 and not missing3) else ('missing_ew3' if (missing3 and not missing1) else 'missing_both')
+
+        # DIAGNOSTIC ONLY: this path never escalates to Stage 2 (no
+        # reduced-dimension Stage 2 model exists yet for a missing line --
+        # would need its own analytic-substitution treatment, same as
+        # fit_decoupled_stage_missing gives Stage 1). But max_missed_sig
+        # on the available (non-missing) windows is still real signal, so
+        # flag it in escalation_reason for triage.
+        msig0 = max_missed_sig(nwave, nspec, nivar, result0['fit'])
+        if msig0 > msig_envelope(SN):
+            esc_reason = esc_reason + ',msig_flagged'
+
         return dict(theta=theta0, fit=result0['fit'], chi2=chi2_0,
                     cat=result0['cat'][0], cat_err=result0['cat'][1], stage=0,
                     ew=[result0['ew1'][0], result0['ew2'][0], result0['ew3'][0]],

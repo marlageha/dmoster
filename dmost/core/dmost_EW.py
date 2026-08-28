@@ -46,8 +46,20 @@ DEIMOS_REDUX   = os.getenv('DEIMOS_REDUX')
 # excluding any single field (Ter5, 477 slits -- floor/b barely move).
 # See CaT_GL_syserr_Feh/research_log_2026-08-25.html for the full
 # derivation and validation.
-CHI2_ENVELOPE_FLOOR = 5.489
-CHI2_ENVELOPE_B     = 0.004019
+#
+# STAGE-DEPENDENT (Stage 1/Stage 2 redesign): Stage 2 only runs on the
+# harder, previously-flagged slits, so it sits higher in chi2 than
+# Stage 1 at the same S/N -- a single shared envelope is either too
+# loose for Stage 1 or too tight for Stage 2. Both curves are percentile
+# fits to the full combined population; Stage 2 uses the tighter
+# (99.25th) curve so it's flagged more aggressively, since a slit that
+# still looks bad after Stage 2's extra freedom is more likely a
+# genuine problem. See CaT_GL_syserr_Feh/research_log_2026-08-27.html
+# for the derivation.
+CHI2_ENVELOPE_FLOOR_STAGE1 = 8.1056
+CHI2_ENVELOPE_B_STAGE1     = 0.004453
+CHI2_ENVELOPE_FLOOR_STAGE2 = 6.5205
+CHI2_ENVELOPE_B_STAGE2     = 0.004122
 
 
 ######################################################
@@ -395,6 +407,12 @@ def calc_all_EW(data_dir, slits, mask, arg, pdf, rng):
             slits['cat_err'][arg] = -999.
         if (CaT_chi2 > 30) & (slits['collate1d_SN'][arg] < 100):
             slits['cat_err'][arg] = -999.
+        # TOO MANY CONTINUUM BANDS MISSING TO TRUST THE NORMALIZATION --
+        # with only 1-2 of 5 bands covered there's no real slope
+        # information, so the normalized spectrum is unreliable
+        # regardless of chi2.
+        if len(coverage_dropped) >= 4:
+            slits['cat_err'][arg] = -999.
 
 
         ##########################
@@ -492,15 +510,22 @@ def run_coadd_EW(data_dir, slits, mask):
 
 
     # FLAG SLITS WHERE cat_chi2 IS UNREASONABLY LARGE FOR THEIR S/N --
-    # FIXED S/N-DEPENDENT ENVELOPE (dmost_chi2_criteria.curve_form),
+    # STAGE-DEPENDENT S/N ENVELOPE (dmost_chi2_criteria.curve_form),
     # NEEDS ALL SLITS ALREADY FIT SO IT RUNS ONCE HERE, MASK-LEVEL
     valid_chi2 = np.array(slits['cat_chi2']) > 0
     if np.sum(valid_chi2) > 0:
-        sn_arr   = np.array(slits['collate1d_SN'])
-        chi2_arr = np.array(slits['cat_chi2'])
-        flagged  = np.zeros(len(slits), dtype=bool)
-        flagged[valid_chi2] = chi2_arr[valid_chi2] > dmost_chi2_criteria.curve_form(
-            sn_arr[valid_chi2], CHI2_ENVELOPE_FLOOR, CHI2_ENVELOPE_B)
+        sn_arr    = np.array(slits['collate1d_SN'])
+        chi2_arr  = np.array(slits['cat_chi2'])
+        stage_arr = np.array(slits['cat_adapt_stage'])
+        is_stage2 = valid_chi2 & (stage_arr == 2)
+        is_stage1 = valid_chi2 & ~is_stage2
+
+        flagged = np.zeros(len(slits), dtype=bool)
+        flagged[is_stage1] = chi2_arr[is_stage1] > dmost_chi2_criteria.curve_form(
+            sn_arr[is_stage1], CHI2_ENVELOPE_FLOOR_STAGE1, CHI2_ENVELOPE_B_STAGE1)
+        flagged[is_stage2] = chi2_arr[is_stage2] > dmost_chi2_criteria.curve_form(
+            sn_arr[is_stage2], CHI2_ENVELOPE_FLOOR_STAGE2, CHI2_ENVELOPE_B_STAGE2)
+
         slits['cat_chi2_flag'][valid_chi2] = np.where(flagged[valid_chi2], 1.0, 0.0)
         slits['cat_err'][flagged] = -999.
 
