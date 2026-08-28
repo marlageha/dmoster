@@ -41,10 +41,3 @@ def fit_criterion_curve(sn, chi2, percentile=98, n_bins=20):
     fit = least_squares(resid_log, x0=[2.0, 1e-4], args=(bin_centers, bin_pct),
                          bounds=([0, 0], [np.inf, np.inf]))
     return fit.x, bin_centers, bin_pct
-
-
-def flag_chi2_criterionA(sn, chi2, floor, b):
-    '''True where chi2 exceeds the fitted envelope -- same semantics as
-    dmost_EW.flag_cat_chi2_outliers' cat_chi2_flag, but S/N-population-based
-    rather than per-mask nearest-neighbor-based.'''
-    return chi2 > curve_form(sn, floor, b)
