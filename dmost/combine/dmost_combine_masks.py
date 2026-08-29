@@ -13,6 +13,14 @@ from dmost import dmost_utils
 from dmost.combine import dmost_photometry_gaia, dmost_membership
 from scipy import stats
 
+# CaT SYSTEMATIC ERROR, PER-OBSERVATION: sqrt(CAT_SYS_MULT^2*cat_err^2 +
+# CAT_SYS_FLOOR^2). Calibrated from cross-mask repeat-star pairs (dynesty
+# joint-mixture fit, density-weighted MLE, and a binned cross-check all
+# agree within noise; CaT_GL_syserr_Feh/research_log_2026-08-27.html,
+# rechecked on the full Stage 1/Stage 2 database 2026-08-28).
+CAT_SYS_MULT  = 1.7
+CAT_SYS_FLOOR = 0.07
+
 
 
 ###################################
@@ -337,10 +345,7 @@ def combine_mask_ew(stars):
             
 
             # APPLY SYSTEMATIC ERROR FOR CaT HERE
-            if obj['cat_gl'] >2:
-                ctmp = np.sqrt((0.8 * obj['cat_err'])**2 + 0.05**2)
-            if obj['cat_gl'] < 3:
-                ctmp = np.sqrt((1.2 * obj['cat_err'])**2)
+            ctmp = np.sqrt((CAT_SYS_MULT * obj['cat_err'])**2 + CAT_SYS_FLOOR**2)
             cterr   = np.append(cterr,ctmp)
 
             # 0.05A SYSTEMATIC ALREADY APPLIED FOR THESE LINES
@@ -363,13 +368,17 @@ def combine_mask_ew(stars):
         naI = sum2n/sum1n
         mgI = sum2m/sum1m
 
-        #  ADD SYSTEMATIC ERROR FLOOR to COADDS
+        #  ADD SYSTEMATIC ERROR FLOOR TO COADDS -- CaT's per-observation
+        #  floor (CAT_SYS_FLOOR) still shrinks with sqrt(N) as more masks
+        #  are combined, so a hard floor on the COADDED value is kept too,
+        #  guaranteeing it never reports below CAT_SYS_FLOOR regardless
+        #  of how many masks contribute.
         sys_err = 0.05
         cat_err = np.sqrt(1./sum1)
         naI_err = np.sqrt(1./sum1n)
         mgI_err = np.sqrt(1./sum1m)
-        if cat_err < sys_err:
-            cat_err = 0.05
+        if cat_err < CAT_SYS_FLOOR:
+            cat_err = CAT_SYS_FLOOR
         if naI_err < sys_err:
             naI_err = 0.05
         if mgI_err < sys_err:
