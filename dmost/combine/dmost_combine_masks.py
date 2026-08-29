@@ -108,7 +108,7 @@ def create_allstars(nmasks,nstars):
             filled_column('gaia_parallax_err',-999.,nstars),
             filled_column('gaia_aen',-999.,nstars),
             filled_column('gaia_aen_sig',-999.,nstars),
-            filled_column('gaia_phot_variable_flag','   ',nstars),
+            filled_column('gaia_phot_variable_flag','                    ',nstars),
             filled_column('gaia_rv',-999.,nstars),
             filled_column('gaia_rv_err',-999.,nstars),
             filled_column('gaia_grvs_mag',-999.,nstars),
@@ -211,16 +211,16 @@ def combine_mask_velocities(stars):
     v,verr, v_chi2, teff,feh,ncomb = [-999.,-999.,-999,-999.,-999.,0]
     verr_rand,verr_sys = [-999.,-999.]
     if (np.size(good_stars) == 1):
-        v     = good_stars['dmost_v']
-        teff  = good_stars['chi2_teff']
-        feh   = good_stars['chi2_feh']
+        v     = float(good_stars['dmost_v'][0])
+        teff  = float(good_stars['chi2_teff'][0])
+        feh   = float(good_stars['chi2_feh'][0])
 
         verr_rand = 0
 #        verr_rand = good_stars['dmost_v_err_rand']
-        verr_sys  = good_stars['dmost_v_err']
+        verr_sys  = float(good_stars['dmost_v_err'][0])
 
         v_chi2   = np.mean(good_stars['v_chi2'])
-        t_exp    = good_stars['texp']
+        t_exp    = float(good_stars['texp'][0])
 
     
     if np.size(good_stars) > 1:
@@ -324,18 +324,12 @@ def combine_mask_ew(stars):
     
     cat,cat_err,naI,naI_err,mgI,mgI_err, gl,ncomb = [-999.,-999.,-999.,-999.,-999.,-999.,-999.,0]
     w1,w2,w3 = [-999.,-999.,-999.]
-    if (np.size(good_stars) == 1):
-        cat      = good_stars['cat']
-        cat_err  = good_stars['cat_err']
-        naI      = good_stars['naI']
-        naI_err  = good_stars['naI_err']
-        mgI      = good_stars['mgI']
-        mgI_err  = good_stars['mgI_err']
 
-
-        ncomb=ncomb+1
-
-    
+    # (a size==1 shortcut used to live here, but the block below already
+    # handles it correctly via the weighted-sum formulas -- for a single
+    # star that reduces exactly to cat=ct[0], cat_err=cterr[0], etc. The
+    # shortcut was dead code: it ran first, then got unconditionally
+    # overwritten by this block, which also runs for size==1.)
     if np.size(good_stars) >= 1:
         ct,cterr,na,naerr,mg,mgerr = [],[],[],[],[],[]
         for obj in good_stars:
@@ -419,39 +413,42 @@ def combine_mask_marz(star):
 
 
     # PARSE MULTIPLE MEASUREMENTS
+    # Priority order 2 -> 3 -> 4 -> 6 -> 1 -> average: each block is
+    # guarded on marz_flag still being unset (-999) so a higher-priority
+    # match can't be silently overwritten by a later, lower-priority one.
     if (np.size(marz_obj) >1):
 
-        if np.any(marz_obj['marz_flag'] == 2):
+        if (marz_flag == -999) & np.any(marz_obj['marz_flag'] == 2):
             marz_flag    = 2
 
 
         # IF ANY EXP IS QSO, SET AS 6
-        if np.any(marz_obj['marz_flag'] == 3) :
+        if (marz_flag == -999) & np.any(marz_obj['marz_flag'] == 3):
             marz_flag   = 3
             marz_z = np.mean(marz_obj['marz_z'][marz_obj['marz_flag'] == 3])
 
         # IF ANY EXP IS GOOD GALAXY, SET AS 4
-        if np.any(marz_obj['marz_flag'] == 4):
+        if (marz_flag == -999) & np.any(marz_obj['marz_flag'] == 4):
             marz_flag   = 4
             marz_z = np.mean(marz_obj['marz_z'][marz_obj['marz_flag'] == 4])
 
         # IF ANY EXP IS QSO, SET AS 6
-        if np.any(marz_obj['marz_flag'] == 6):
+        if (marz_flag == -999) & np.any(marz_obj['marz_flag'] == 6):
             marz_flag  = 6
             marz_z = np.mean(marz_obj['marz_z'][marz_obj['marz_flag'] == 6])
 
 
-        if np.any(marz_obj['marz_flag'] == 1) & np.any(marz_obj['marz_flag'] != 4):
+        if (marz_flag == -999) & np.any(marz_obj['marz_flag'] == 1):
             marz_flag = 1
             marz_z = np.mean(marz_obj['marz_z'][marz_obj['marz_flag'] == 1])
 
-            
+
         # ELSE AVERAGE THE FLAGS
-        if (marz_flag == -1):
+        if (marz_flag == -999):
             marz_flag = np.mean(marz_obj['marz_flag'])
 
         # SET EXP TIME IF EXTRAGALACTIC
-        if (marz_flag > 2):              
+        if (marz_flag > 2):
             t_exp= np.sum(marz_obj['texp'])
 
     return marz_z, marz_flag, t_exp
@@ -534,161 +531,201 @@ def read_dmost_files(masklist):
 
 ###########################################
 def get_unique_spectra(allslits):
+    """
+    Group repeat slits of the same star (within 1.0" on sky) into unique
+    stars. Complete-linkage clustering on the 1.0" adjacency graph: a
+    candidate pair is only merged into one group if every existing member
+    on each side is within 1.0" of every member on the other side (i.e.
+    the merged group is a clique in the 1.0" graph), not just
+    chain-connected through an intermediate slit. This avoids incorrectly
+    merging genuinely distinct, nearby stars via a chain through an
+    independently-astrometered auxiliary-mask target (e.g. Draco's RRL
+    follow-up masks) while still combining true repeat observations of
+    the same star.
 
-    cdeimos = SkyCoord(ra=allslits['RA']*u.degree, dec=allslits['DEC']*u.degree) 
-    idx, d2d, d3d = cdeimos.match_to_catalog_sky(cdeimos)  
-    mt = d2d < 1.0*u.arcsec
+    Returns (nstars, group_id): nstars is the number of unique stars,
+    group_id[k] in [0, nstars) labels which unique star slit k belongs to.
+    """
+    n = len(allslits)
+    cdeimos = SkyCoord(ra=allslits['RA']*u.degree, dec=allslits['DEC']*u.degree)
+    idx1, idx2, sep2d, _ = cdeimos.search_around_sky(cdeimos, 1.0*u.arcsec)
 
-    nstars = np.size(allslits)
+    # CANONICAL, DEDUPED EDGE LIST, PROCESSED CLOSEST PAIR FIRST
+    pairs = {}
+    for a, b, s in zip(idx1, idx2, sep2d.arcsec):
+        if a == b:
+            continue
+        key = (a, b) if a < b else (b, a)
+        pairs[key] = s
+    edges = set(pairs.keys())
+    ordered = sorted(pairs.items(), key=lambda kv: kv[1])
 
-    return nstars
+    parent  = np.arange(n)
+    members = {i: [i] for i in range(n)}
+
+    def find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def linked(i, j):
+        return (i, j) in edges if i < j else (j, i) in edges
+
+    for (a, b), s in ordered:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            continue
+        # ONLY MERGE IF EVERY CROSS-PAIR IS WITHIN 1.0" (CLIQUE, NOT CHAIN)
+        if all(linked(i, j) for i in members[ra] for j in members[rb]):
+            parent[ra] = rb
+            members[rb].extend(members[ra])
+            del members[ra]
+
+    labels = np.array([find(k) for k in range(n)])
+    _, group_id = np.unique(labels, return_inverse=True)
+    nstars = int(group_id.max()) + 1 if n > 0 else 0
+
+    return nstars, group_id
 
 ###########################################
-def combine_mask_quantities(nmasks, nstars, sc_gal, allslits):
+def combine_mask_quantities(nmasks, nstars, group_id, sc_gal, allslits):
 
     # CREATE DATA TABLE
     single_mask =0
     if (nmasks ==1):
         nmasks = 2
         single_mask =1
-    dmost_allstar  = create_allstars(nmasks, nstars) 
+    dmost_allstar  = create_allstars(nmasks, nstars)
 
-    test_allslits  = allslits.copy()
-    for i,obj in enumerate(test_allslits):
+    # ONE PASS PER UNIQUE STAR (group_id groups repeat slits within 1.0",
+    # see get_unique_spectra) -- i IS the output row index directly, so
+    # every row 0..nstars-1 is filled and no post-hoc trim is needed.
+    for i in range(nstars):
 
-        if (obj['RA'] != -99):
-            
-            dmost_allstar['RA'][i]      = obj['RA']
-            dmost_allstar['DEC'][i]     = obj['DEC']
-            dmost_allstar['objname'][i] = obj['objname']
-            dmost_allstar['slitwidth'][i] = round(obj['slitwidth'], 2)
-            dmost_allstar['mean_mjd'][i] = obj['mean_mjd']
+        m = group_id == i
+        group_slits = allslits[m]
+        nrpt = np.sum(m)
+        if nrpt == 0:
+            continue
+        obj = group_slits[0]
 
-
-            if (obj['serendip'] > 0):
-                dmost_allstar['serendip'][i] = 1
-            else:
-                dmost_allstar['serendip'][i] = 0
-
-            # FIND REPEAT SPECTRA
-            ra_diff  = (obj['RA']  - allslits['RA']) * np.cos(obj['DEC']  * np.pi/180.) 
-            dec_diff = (obj['DEC'] - allslits['DEC'])
-            diff     = 3600.*np.sqrt(ra_diff**2 + dec_diff**2)
-            
-            
-            # SET MATCHING THRESHOLD -- 1.0" arcseconds
-            m = diff < 1.0
-            
-            nrpt = np.sum(m)
-            for j,robj in enumerate(test_allslits[m]):
-
-                # KEEP TRACK OF MASK NAMES
-                if (j==0):
-                    dmost_allstar['masknames'][i]   = obj['maskname']
-                    dmost_allstar['collate1d_filename'][i]  = robj['collate1d_filename']
-
-                if (j > 0):
-                    dmost_allstar['masknames'][i]   = dmost_allstar['masknames'][i]+'+'+robj['maskname']
-
-                c1 = (j == 0) 
-                c2 = (j > 0) & (single_mask ==0)
-
-                # IF FIRST OR SINGLE MASK
-                if (c1 | c2):
-
-                    dmost_allstar['mask_v'][i,j]     = robj['dmost_v']
-                    dmost_allstar['mask_v_err'][i,j] = robj['dmost_v_err']
-
-                    dmost_allstar['mask_coadd_v'][i,j]    = robj['coadd_v']
-                    dmost_allstar['mask_coadd_verr'][i,j] = robj['coadd_v_err']
-                    dmost_allstar['mask_coadd_flag'][i,j] = robj['coadd_flag']
-
-                    dmost_allstar['mask_SN'][i,j]    = robj['collate1d_SN']
-                    dmost_allstar['mask_nexp'][i,j]  = robj['v_nexp']
-                    dmost_allstar['mask_mjd'][i,j]   = robj['mean_mjd']
-                    dmost_allstar['mask_rms_arc'][i,j]   = robj['rms_arc']
+        dmost_allstar['RA'][i]      = obj['RA']
+        dmost_allstar['DEC'][i]     = obj['DEC']
+        dmost_allstar['objname'][i] = obj['objname']
+        dmost_allstar['slitwidth'][i] = round(obj['slitwidth'], 2)
+        dmost_allstar['mean_mjd'][i] = obj['mean_mjd']
 
 
-                    dmost_allstar['mask_marz_flag'][i,j] = robj['marz_flag']
-                    dmost_allstar['mask_marz_z'][i,j]    = robj['marz_z']
+        if (obj['serendip'] > 0):
+            dmost_allstar['serendip'][i] = 1
+        else:
+            dmost_allstar['serendip'][i] = 0
 
-                    dmost_allstar['mask_teff'][i,j]  = robj['chi2_teff']
-                    dmost_allstar['mask_logg'][i,j]  = robj['chi2_logg']
-                    dmost_allstar['mask_feh'][i,j]   = robj['chi2_feh']
-                    dmost_allstar['mask_vchi2'][i,j]   = robj['v_chi2']
+        for j,robj in enumerate(group_slits):
+
+            # KEEP TRACK OF MASK NAMES
+            if (j==0):
+                dmost_allstar['masknames'][i]   = obj['maskname']
+                dmost_allstar['collate1d_filename'][i]  = robj['collate1d_filename']
+
+            if (j > 0):
+                dmost_allstar['masknames'][i]   = dmost_allstar['masknames'][i]+'+'+robj['maskname']
+
+            c1 = (j == 0)
+            c2 = (j > 0) & (single_mask ==0)
+
+            # IF FIRST OR SINGLE MASK
+            if (c1 | c2):
+
+                dmost_allstar['mask_v'][i,j]     = robj['dmost_v']
+                dmost_allstar['mask_v_err'][i,j] = robj['dmost_v_err']
+
+                dmost_allstar['mask_coadd_v'][i,j]    = robj['coadd_v']
+                dmost_allstar['mask_coadd_verr'][i,j] = robj['coadd_v_err']
+                dmost_allstar['mask_coadd_flag'][i,j] = robj['coadd_flag']
+
+                dmost_allstar['mask_SN'][i,j]    = robj['collate1d_SN']
+                dmost_allstar['mask_nexp'][i,j]  = robj['v_nexp']
+                dmost_allstar['mask_mjd'][i,j]   = robj['mean_mjd']
+                dmost_allstar['mask_rms_arc'][i,j]   = robj['rms_arc']
 
 
-                    dmost_allstar['mask_cat'][i,j]   = robj['cat']
-                    dmost_allstar['mask_naI'][i,j]   = robj['naI']
-                    dmost_allstar['mask_mgI'][i,j]   = robj['mgI']
-                    dmost_allstar['mask_cat_gl'][i,j]   = robj['cat_gl']
+                dmost_allstar['mask_marz_flag'][i,j] = robj['marz_flag']
+                dmost_allstar['mask_marz_z'][i,j]    = robj['marz_z']
 
-                    dmost_allstar['mask_cat_err'][i,j]  = robj['cat_err']
-                    dmost_allstar['mask_naI_err'][i,j]  = robj['naI_err']
-                    dmost_allstar['mask_mgI_err'][i,j]  = robj['mgI_err']
-                  
-                    dmost_allstar['mask_flag_short_var'][i,j]  = robj['flag_short_var']
-                    dmost_allstar['mask_var_short_max_t'][i,j] = robj['var_short_max_t']
+                dmost_allstar['mask_teff'][i,j]  = robj['chi2_teff']
+                dmost_allstar['mask_logg'][i,j]  = robj['chi2_logg']
+                dmost_allstar['mask_feh'][i,j]   = robj['chi2_feh']
+                dmost_allstar['mask_vchi2'][i,j]   = robj['v_chi2']
+
+
+                dmost_allstar['mask_cat'][i,j]   = robj['cat']
+                dmost_allstar['mask_naI'][i,j]   = robj['naI']
+                dmost_allstar['mask_mgI'][i,j]   = robj['mgI']
+                dmost_allstar['mask_cat_gl'][i,j]   = robj['cat_gl']
+
+                dmost_allstar['mask_cat_err'][i,j]  = robj['cat_err']
+                dmost_allstar['mask_naI_err'][i,j]  = robj['naI_err']
+                dmost_allstar['mask_mgI_err'][i,j]  = robj['mgI_err']
+
+                dmost_allstar['mask_flag_short_var'][i,j]  = robj['flag_short_var']
+                dmost_allstar['mask_var_short_max_t'][i,j] = robj['var_short_max_t']
 
 
 
-            # COMBINE VELOCITIES      
-            v, verr_rand,verr_sys, vchi2, teff, feh, t_exp = combine_mask_velocities(test_allslits[m])
-            dmost_allstar['v'][i]      = v
-            dmost_allstar['verr_rand'][i]  = verr_rand
-            dmost_allstar['v_err'][i]  = verr_sys
-            dmost_allstar['v_chi2'][i] = vchi2
-            dmost_allstar['t_exp'][i]  = t_exp
+        # COMBINE VELOCITIES
+        v, verr_rand,verr_sys, vchi2, teff, feh, t_exp = combine_mask_velocities(group_slits)
+        dmost_allstar['v'][i]      = v
+        dmost_allstar['verr_rand'][i]  = verr_rand
+        dmost_allstar['v_err'][i]  = verr_sys
+        dmost_allstar['v_chi2'][i] = vchi2
+        dmost_allstar['t_exp'][i]  = t_exp
 
 
-            dmost_allstar['nmask'][i]  = nrpt
-            dmost_allstar['nexp'][i]   = np.sum(test_allslits['nexp'][m])
-            dmost_allstar['flag_coadd'][i]  = np.max(test_allslits['coadd_flag'][m])
+        dmost_allstar['nmask'][i]  = nrpt
+        dmost_allstar['nexp'][i]   = np.sum(group_slits['nexp'])
+        dmost_allstar['flag_coadd'][i]  = np.max(group_slits['coadd_flag'])
 
-            dmost_allstar['tmpl_teff'][i]  = teff
-            dmost_allstar['tmpl_feh'][i]   = feh
+        dmost_allstar['tmpl_teff'][i]  = teff
+        dmost_allstar['tmpl_feh'][i]   = feh
 
-            # COMBINE EW 
-            cat,cat_err,mgI,mgI_err,naI,naI_err, w1,w2,w3,gl, ncomb = combine_mask_ew(test_allslits[m])
-            dmost_allstar['ew_cat'][i]       = cat
-            dmost_allstar['ew_cat_err'][i]   = cat_err
-            dmost_allstar['ew_mgI'][i]       = mgI
-            dmost_allstar['ew_mgI_err'][i]   = mgI_err
-            dmost_allstar['ew_naI'][i]       = naI
-            dmost_allstar['ew_naI_err'][i]   = naI_err
-            dmost_allstar['ew_w1'][i]        = w1
-            dmost_allstar['ew_w2'][i]        = w2
-            dmost_allstar['ew_w3'][i]        = w3
-            dmost_allstar['ew_gl'][i]        = gl
+        # COMBINE EW
+        cat,cat_err,mgI,mgI_err,naI,naI_err, w1,w2,w3,gl, ncomb = combine_mask_ew(group_slits)
+        dmost_allstar['ew_cat'][i]       = cat
+        dmost_allstar['ew_cat_err'][i]   = cat_err
+        dmost_allstar['ew_mgI'][i]       = mgI
+        dmost_allstar['ew_mgI_err'][i]   = mgI_err
+        dmost_allstar['ew_naI'][i]       = naI
+        dmost_allstar['ew_naI_err'][i]   = naI_err
+        dmost_allstar['ew_w1'][i]        = w1
+        dmost_allstar['ew_w2'][i]        = w2
+        dmost_allstar['ew_w3'][i]        = w3
+        dmost_allstar['ew_gl'][i]        = gl
 
 
-            # CALCULATE Mean SN 
-            # CATCH STRANGE CASES
-            msn = dmost_allstar['mask_SN'][i,:] > -1
-            dmost_allstar['SN'][i] = np.sum(dmost_allstar['mask_SN'][i,msn]) / np.sqrt(np.size(dmost_allstar['mask_SN'][i,msn]))
+        # CALCULATE Mean SN
+        # CATCH STRANGE CASES
+        msn = dmost_allstar['mask_SN'][i,:] > -1
+        dmost_allstar['SN'][i] = np.sum(dmost_allstar['mask_SN'][i,msn]) / np.sqrt(np.size(dmost_allstar['mask_SN'][i,msn]))
+        if dmost_allstar['SN'][i] > 700:
+            dmost_allstar['SN'][i] = np.min(dmost_allstar['mask_SN'][i,msn])
             if dmost_allstar['SN'][i] > 700:
-                dmost_allstar['SN'][i] = np.min(dmost_allstar['mask_SN'][i,msn])
-                if dmost_allstar['SN'][i] > 700:
-                    dmost_allstar['SN'][i] = 500
+                dmost_allstar['SN'][i] = 500
 
-           # COMBINE MARZ
-            zgal, zflag, zexp  = combine_mask_marz(test_allslits[m])
-            dmost_allstar['marz_z'][i]    = zgal
-            dmost_allstar['marz_flag'][i] = zflag
-            if (zexp > 0):
-                dmost_allstar['t_exp'][i]     = zexp
+       # COMBINE MARZ
+        zgal, zflag, zexp  = combine_mask_marz(group_slits)
+        dmost_allstar['marz_z'][i]    = zgal
+        dmost_allstar['marz_flag'][i] = zflag
+        if (zexp > 0):
+            dmost_allstar['t_exp'][i]     = zexp
 
-
-            test_allslits['RA'][m] = -99
-            
-        
-    # REMOVE EXTRA LINES
-    m=dmost_allstar['RA'] != -999.0
-    dmost_allstar = dmost_allstar[m]
 
   # SET EXTRAGALACTIC VALUES
     mgal  = dmost_allstar['marz_flag']  > 2
-    dmost_allstar['v'][mgal]     =  dmost_allstar['marz_z'][mgal]*3e5  
+    dmost_allstar['v'][mgal]     =  dmost_allstar['marz_z'][mgal]*3e5
     dmost_allstar['v_err'][mgal] =  0
 
 
@@ -737,11 +774,11 @@ def combine_masks(object_name, max_obs_date = 20500101,file_create_date='',**kwa
 
 
     # HOW MANY UNIQUE SPECTRA?
-    nstars = get_unique_spectra(alldata)
-   
+    nstars, group_id = get_unique_spectra(alldata)
+
 
     # CREATE AND POPULATE FINAL DATA TABLE
-    alldata  = combine_mask_quantities(nmasks, nstars, sc_gal, alldata)
+    alldata  = combine_mask_quantities(nmasks, nstars, group_id, sc_gal, alldata)
 
     # SET BINARY FLAGS
     alldata  = set_binary_flag(alldata)

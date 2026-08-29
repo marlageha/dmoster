@@ -39,8 +39,7 @@ def mg_wmean(x, x_err):
 
 ######################################################
 def plot_isochrone_parsec_decam(dist,feh):
-    
-    DEIMOS_RAW = '/Users/mg37/Dropbox/DEIMOS/'
+
     iso = ascii.read(DEIMOS_RAW+'/Photometry/isochrones/iso_decam_t12.dat',header_start=13)
 
     # FIND MATCHING [Fe/H]
